@@ -178,6 +178,17 @@ pub fn concat_batches<'a>(
         return Ok(RecordBatch::new_empty(schema.clone()));
     }
     let field_num = schema.fields().len();
+    if field_num == 0 {
+        let num_rows = batches
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        return RecordBatch::try_new_with_options(
+            schema.clone(),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+        );
+    }
     let mut arrays = Vec::with_capacity(field_num);
     for i in 0..field_num {
         let array = concat(

@@ -4410,7 +4410,7 @@ impl crate::thrift::TSerializable for PageLocation {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OffsetIndex {
   /// PageLocations, ordered by increasing PageLocation.offset. It is required
-  /// that page_locations\[i\].first_row_index < page_locations\[i+1\].first_row_index.
+  /// that page_locations[i].first_row_index < page_locations[i+1].first_row_index.
   pub page_locations: Vec<PageLocation>,
 }
 
@@ -4476,20 +4476,20 @@ impl crate::thrift::TSerializable for OffsetIndex {
 //
 
 /// Description for ColumnIndex.
-/// Each `<array-field>`\[i\] refers to the page at OffsetIndex.page_locations\[i\]
+/// Each <array-field>[i] refers to the page at OffsetIndex.page_locations[i]
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ColumnIndex {
   /// A list of Boolean values to determine the validity of the corresponding
   /// min and max values. If true, a page contains only null values, and writers
   /// have to set the corresponding entries in min_values and max_values to
-  /// byte\[0\], so that all lists have the same length. If false, the
+  /// byte[0], so that all lists have the same length. If false, the
   /// corresponding entries in min_values and max_values must be valid.
   pub null_pages: Vec<bool>,
   /// Two lists containing lower and upper bounds for the values of each page
   /// determined by the ColumnOrder of the column. These may be the actual
   /// minimum and maximum values found on a page, but can also be (more compact)
   /// values that do not exist on a page. For example, instead of storing ""Blart
-  /// Versenwald III", a writer may set min_values\[i\]="B", max_values\[i\]="C".
+  /// Versenwald III", a writer may set min_values[i]="B", max_values[i]="C".
   /// Such more compact values must still be valid values within the column's
   /// logical type. Readers must make sure that list entries are populated before
   /// using them by inspecting null_pages.
@@ -4497,7 +4497,7 @@ pub struct ColumnIndex {
   pub max_values: Vec<Vec<u8>>,
   /// Stores whether both min_values and max_values are ordered and if so, in
   /// which direction. This allows readers to perform binary searches in both
-  /// lists. Readers cannot assume that max_values\[i\] <= min_values\[i+1\], even
+  /// lists. Readers cannot assume that max_values[i] <= min_values[i+1], even
   /// if the lists are ordered.
   pub boundary_order: BoundaryOrder,
   /// A list containing the number of null values for each page *
@@ -4919,7 +4919,7 @@ pub struct FileMetaData {
   /// Optional key/value metadata *
   pub key_value_metadata: Option<Vec<KeyValue>>,
   /// String for application that wrote this file.  This should be in the format
-  /// `<Application>` version `<App Version>` (build `<App Build Hash>`).
+  /// <Application> version <App Version> (build <App Build Hash>).
   /// e.g. impala version 1.0 (build 6cf94d29b2b7115df4de2c06e2ab4326d721eb55)
   /// 
   pub created_by: Option<String>,
@@ -4948,7 +4948,7 @@ pub struct FileMetaData {
 }
 
 impl FileMetaData {
-  pub fn new<F5, F6, F7, F8, F9>(version: i32, schema: Vec<SchemaElement>, num_rows: i64, row_groups: Vec<RowGroup>, key_value_metadata: F5, created_by: F6, column_orders: F7, encryption_algorithm: F8, footer_signing_key_metadata: F9) -> FileMetaData where F5: Into<Option<Vec<KeyValue>>>, F6: Into<Option<String>>, F7: Into<Option<Vec<ColumnOrder>>>, F8: Into<Option<EncryptionAlgorithm>>, F9: Into<Option<Vec<u8>>> {
+  pub fn new<F5, F6, F7, F10, F11>(version: i32, schema: Vec<SchemaElement>, num_rows: i64, row_groups: Vec<RowGroup>, key_value_metadata: F5, created_by: F6, column_orders: F7, encryption_algorithm: F10, footer_signing_key_metadata: F11) -> FileMetaData where F5: Into<Option<Vec<KeyValue>>>, F6: Into<Option<String>>, F7: Into<Option<Vec<ColumnOrder>>>, F10: Into<Option<EncryptionAlgorithm>>, F11: Into<Option<Vec<u8>>> {
     FileMetaData {
       version,
       schema,
@@ -4973,8 +4973,8 @@ impl crate::thrift::TSerializable for FileMetaData {
     let mut f_5: Option<Vec<KeyValue>> = None;
     let mut f_6: Option<String> = None;
     let mut f_7: Option<Vec<ColumnOrder>> = None;
-    let mut f_8: Option<EncryptionAlgorithm> = None;
-    let mut f_9: Option<Vec<u8>> = None;
+    let mut f_10: Option<EncryptionAlgorithm> = None;
+    let mut f_11: Option<Vec<u8>> = None;
     loop {
       let field_ident = i_prot.read_field_begin()?;
       if field_ident.field_type == TType::Stop {
@@ -5034,13 +5034,13 @@ impl crate::thrift::TSerializable for FileMetaData {
           i_prot.read_list_end()?;
           f_7 = Some(val);
         },
-        8 => {
+        10 => {
           let val = EncryptionAlgorithm::read_from_in_protocol(i_prot)?;
-          f_8 = Some(val);
+          f_10 = Some(val);
         },
-        9 => {
+        11 => {
           let val = i_prot.read_bytes()?;
-          f_9 = Some(val);
+          f_11 = Some(val);
         },
         _ => {
           i_prot.skip(field_ident.field_type)?;
@@ -5061,8 +5061,8 @@ impl crate::thrift::TSerializable for FileMetaData {
       key_value_metadata: f_5,
       created_by: f_6,
       column_orders: f_7,
-      encryption_algorithm: f_8,
-      footer_signing_key_metadata: f_9,
+      encryption_algorithm: f_10,
+      footer_signing_key_metadata: f_11,
     };
     Ok(ret)
   }
@@ -5113,12 +5113,12 @@ impl crate::thrift::TSerializable for FileMetaData {
       o_prot.write_field_end()?
     }
     if let Some(ref fld_var) = self.encryption_algorithm {
-      o_prot.write_field_begin(&TFieldIdentifier::new("encryption_algorithm", TType::Struct, 8))?;
+      o_prot.write_field_begin(&TFieldIdentifier::new("encryption_algorithm", TType::Struct, 10))?;
       fld_var.write_to_out_protocol(o_prot)?;
       o_prot.write_field_end()?
     }
     if let Some(ref fld_var) = self.footer_signing_key_metadata {
-      o_prot.write_field_begin(&TFieldIdentifier::new("footer_signing_key_metadata", TType::String, 9))?;
+      o_prot.write_field_begin(&TFieldIdentifier::new("footer_signing_key_metadata", TType::String, 11))?;
       o_prot.write_bytes(fld_var)?;
       o_prot.write_field_end()?
     }
