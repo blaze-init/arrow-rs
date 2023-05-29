@@ -126,7 +126,8 @@ pub fn from_thrift(
     Ok(match thrift_stats {
         Some(stats) => {
             // Number of nulls recorded, when it is not available, we just mark it as 0.
-            let null_count = stats.null_count.unwrap_or(0);
+            let null_count = stats.null_count.unwrap_or(0)
+                .max(0); // blaze - fix 'Statistics null count is negative (-1)' error
 
             if null_count < 0 {
                 return Err(ParquetError::General(format!(

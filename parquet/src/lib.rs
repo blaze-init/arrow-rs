@@ -129,3 +129,7 @@ pub mod record;
 pub mod schema;
 
 pub mod thrift;
+
+#[cfg(feature = "arrow")]
+#[cfg(feature = "async")]
+pub mod blaze;

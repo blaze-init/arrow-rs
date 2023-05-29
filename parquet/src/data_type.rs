@@ -188,7 +188,9 @@ impl ByteArray {
             .as_ref()
             .map(|ptr| ptr.as_ref())
             .ok_or_else(|| general_err!("Can't convert empty byte array to utf8"))
-            .and_then(|bytes| from_utf8(bytes).map_err(|e| e.into()))
+            .and_then(|bytes| Ok(unsafe {
+                std::str::from_utf8_unchecked(bytes)
+            }))
     }
 }
 
