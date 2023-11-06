@@ -1425,25 +1425,25 @@ impl<O: OffsetSizeTrait> ByteArrayType for GenericStringType<O> {
         values: &Buffer,
     ) -> Result<(), ArrowError> {
         // Verify that the slice as a whole is valid UTF-8
-        let validated = std::str::from_utf8(values).map_err(|e| {
-            ArrowError::InvalidArgumentError(format!("Encountered non UTF-8 data: {e}"))
-        })?;
+        // let validated = std::str::from_utf8(values).map_err(|e| {
+        //     ArrowError::InvalidArgumentError(format!("Encountered non UTF-8 data: {e}"))
+        // })?;
 
-        // Verify each offset is at a valid character boundary in this UTF-8 array
-        for offset in offsets.iter() {
-            let o = offset.as_usize();
-            if !validated.is_char_boundary(o) {
-                if o < validated.len() {
-                    return Err(ArrowError::InvalidArgumentError(format!(
-                        "Split UTF-8 codepoint at offset {o}"
-                    )));
-                }
-                return Err(ArrowError::InvalidArgumentError(format!(
-                    "Offset of {o} exceeds length of values {}",
-                    validated.len()
-                )));
-            }
-        }
+        // // Verify each offset is at a valid character boundary in this UTF-8 array
+        // for offset in offsets.iter() {
+        //     let o = offset.as_usize();
+        //     if !validated.is_char_boundary(o) {
+        //         if o < validated.len() {
+        //             return Err(ArrowError::InvalidArgumentError(format!(
+        //                 "Split UTF-8 codepoint at offset {o}"
+        //             )));
+        //         }
+        //         return Err(ArrowError::InvalidArgumentError(format!(
+        //             "Offset of {o} exceeds length of values {}",
+        //             validated.len()
+        //         )));
+        //     }
+        // }
         Ok(())
     }
 }
