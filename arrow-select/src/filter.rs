@@ -307,6 +307,11 @@ impl FilterPredicate {
 
 fn filter_array(values: &dyn Array, predicate: &FilterPredicate) -> Result<ArrayRef, ArrowError> {
     if predicate.filter.len() > values.len() {
+        assert!(false,
+            "Filter predicate of length {} is larger than target array of length {}",
+            predicate.filter.len(),
+            values.len()
+        );
         return Err(ArrowError::InvalidArgumentError(format!(
             "Filter predicate of length {} is larger than target array of length {}",
             predicate.filter.len(),
