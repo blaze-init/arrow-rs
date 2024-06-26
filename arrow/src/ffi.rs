@@ -400,6 +400,10 @@ impl<'a> ImportedArrowArray<'a> {
                 (length + 1) * (bits / 8)
             }
             (DataType::Utf8, 2) | (DataType::Binary, 2) => {
+                if self.array.is_empty() {
+                    return Ok(0);
+                }
+
                 // the len of the data buffer (buffer 2) equals the last value of the offset buffer (buffer 1)
                 let len = self.buffer_len(1, dt)?;
                 // first buffer is the null buffer => add(1)
@@ -410,6 +414,10 @@ impl<'a> ImportedArrowArray<'a> {
                 (unsafe { *offset_buffer.add(len / size_of::<i32>() - 1) }) as usize
             }
             (DataType::LargeUtf8, 2) | (DataType::LargeBinary, 2) => {
+                if self.array.is_empty() {
+                    return Ok(0);
+                }
+
                 // the len of the data buffer (buffer 2) equals the last value of the offset buffer (buffer 1)
                 let len = self.buffer_len(1, dt)?;
                 // first buffer is the null buffer => add(1)
