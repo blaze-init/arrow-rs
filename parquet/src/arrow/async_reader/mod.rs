@@ -118,6 +118,12 @@ pub trait AsyncFileReader: Send {
         &'a mut self,
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>>;
+
+    /// Sync version of get_bytes
+    /// this is only used by blaze, for reading dictionary values for row group pruning
+    fn get_bytes_sync(&mut self, range: Range<u64>) -> Result<Bytes> {
+        unimplemented!("blaze only")
+    }
 }
 
 /// This allows Box<dyn AsyncFileReader + '_> to be used as an AsyncFileReader,
@@ -135,6 +141,10 @@ impl AsyncFileReader for Box<dyn AsyncFileReader + '_> {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>> {
         self.as_mut().get_metadata(options)
+    }
+
+    fn get_bytes_sync(&mut self, range: Range<u64>) -> Result<Bytes> {
+        self.as_mut().get_bytes_sync(range)
     }
 }
 
@@ -555,7 +565,7 @@ struct ReaderFactory<T> {
     /// Optional filter
     filter: Option<RowFilter>,
 
-    /// Limit to apply to remaining row groups.  
+    /// Limit to apply to remaining row groups.
     limit: Option<usize>,
 
     /// Offset to apply to the next
