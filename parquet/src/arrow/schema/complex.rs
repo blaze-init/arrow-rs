@@ -366,7 +366,7 @@ impl Visitor {
                 };
 
                 let map_field = Field::new_struct(
-                    map_key_value.name(),
+                    "entries",
                     [key_field, value_field],
                     false, // The inner map field is always non-nullable (#1697)
                 )
