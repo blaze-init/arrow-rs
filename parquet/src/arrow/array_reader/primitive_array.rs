@@ -25,8 +25,8 @@ use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
 use arrow_array::Decimal256Array;
 use arrow_array::{
-    builder::TimestampNanosecondBufferBuilder, ArrayRef, BooleanArray, Decimal128Array,
-    Float32Array, Float64Array, Int32Array, Int64Array, TimestampNanosecondArray, UInt32Array,
+    builder::TimestampMicrosecondBufferBuilder, ArrayRef, BooleanArray, Decimal128Array,
+    Float32Array, Float64Array, Int32Array, Int64Array, TimestampMicrosecondArray, UInt32Array,
     UInt64Array,
 };
 use arrow_buffer::{i256, BooleanBuffer, Buffer};
@@ -59,7 +59,7 @@ impl IntoBuffer for Vec<bool> {
 
 impl IntoBuffer for Vec<Int96> {
     fn into_buffer(self) -> Buffer {
-        let mut builder = TimestampNanosecondBufferBuilder::new(self.len());
+        let mut builder = TimestampMicrosecondBufferBuilder::new(self.len());
         for v in self {
             builder.append(v.to_nanos())
         }
@@ -161,8 +161,13 @@ where
             PhysicalType::FLOAT => ArrowType::Float32,
             PhysicalType::DOUBLE => ArrowType::Float64,
             PhysicalType::INT96 => match target_type {
-                ArrowType::Timestamp(TimeUnit::Nanosecond, _) => target_type.clone(),
-                _ => unreachable!("INT96 must be timestamp nanosecond"),
+                // blaze:
+                // from Spark 1.5 Timestamps are now stored at a precision of 1us, rather than 1ns
+                //
+                // ArrowType::Timestamp(TimeUnit::Nanosecond, _) => target_type.clone(),
+                // _ => unreachable!("INT96 must be timestamp nanosecond"),
+                ArrowType::Timestamp(TimeUnit::Microsecond, _) => target_type.clone(),
+                _ => unreachable!("INT96 must be timestamp microsecond"),
             },
             PhysicalType::BYTE_ARRAY | PhysicalType::FIXED_LEN_BYTE_ARRAY => {
                 unreachable!("PrimitiveArrayReaders don't support complex physical types");
@@ -194,7 +199,11 @@ where
             },
             PhysicalType::FLOAT => Arc::new(Float32Array::from(array_data)),
             PhysicalType::DOUBLE => Arc::new(Float64Array::from(array_data)),
-            PhysicalType::INT96 => Arc::new(TimestampNanosecondArray::from(array_data)),
+            // blaze:
+            // from Spark 1.5 Timestamps are now stored at a precision of 1us, rather than 1ns
+            //
+            // PhysicalType::INT96 => Arc::new(TimestampNanosecondArray::from(array_data)),
+            PhysicalType::INT96 => Arc::new(TimestampMicrosecondArray::from(array_data)),
             PhysicalType::BYTE_ARRAY | PhysicalType::FIXED_LEN_BYTE_ARRAY => {
                 unreachable!("PrimitiveArrayReaders don't support complex physical types");
             }
