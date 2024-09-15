@@ -215,7 +215,7 @@ impl ArrowReaderMetadata {
 ///
 /// Allows sharing the same builder for both the sync and async versions, whilst also not
 /// breaking the pre-existing ParquetRecordBatchStreamBuilder API
-pub struct AsyncReader<T>(T);
+pub struct AsyncReader<T>(pub T);
 
 /// A builder for reading parquet files from an `async` source as  [`ParquetRecordBatchStream`]
 ///

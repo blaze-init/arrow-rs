@@ -91,27 +91,27 @@ pub mod statistics;
 /// [`StatisticsConverter`]: statistics::StatisticsConverter
 /// [Querying Parquet with Millisecond Latency]: https://arrow.apache.org/blog/2022/12/26/querying-parquet-with-millisecond-latency/
 pub struct ArrowReaderBuilder<T> {
-    pub(crate) input: T,
+    pub input: T,
 
-    pub(crate) metadata: Arc<ParquetMetaData>,
+    pub metadata: Arc<ParquetMetaData>,
 
-    pub(crate) schema: SchemaRef,
+    pub schema: SchemaRef,
 
-    pub(crate) fields: Option<Arc<ParquetField>>,
+    pub fields: Option<Arc<ParquetField>>,
 
-    pub(crate) batch_size: usize,
+    pub batch_size: usize,
 
-    pub(crate) row_groups: Option<Vec<usize>>,
+    pub row_groups: Option<Vec<usize>>,
 
-    pub(crate) projection: ProjectionMask,
+    pub projection: ProjectionMask,
 
-    pub(crate) filter: Option<RowFilter>,
+    pub filter: Option<RowFilter>,
 
-    pub(crate) selection: Option<RowSelection>,
+    pub selection: Option<RowSelection>,
 
-    pub(crate) limit: Option<usize>,
+    pub limit: Option<usize>,
 
-    pub(crate) offset: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl<T: Debug> Debug for ArrowReaderBuilder<T> {
