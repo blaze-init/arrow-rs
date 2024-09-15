@@ -53,27 +53,27 @@ pub mod statistics;
 ///
 /// [`ParquetRecordBatchStreamBuilder::new`]: crate::arrow::async_reader::ParquetRecordBatchStreamBuilder::new
 pub struct ArrowReaderBuilder<T> {
-    pub(crate) input: T,
+    pub input: T,
 
-    pub(crate) metadata: Arc<ParquetMetaData>,
+    pub metadata: Arc<ParquetMetaData>,
 
-    pub(crate) schema: SchemaRef,
+    pub schema: SchemaRef,
 
-    pub(crate) fields: Option<Arc<ParquetField>>,
+    pub fields: Option<Arc<ParquetField>>,
 
-    pub(crate) batch_size: usize,
+    pub batch_size: usize,
 
-    pub(crate) row_groups: Option<Vec<usize>>,
+    pub row_groups: Option<Vec<usize>>,
 
-    pub(crate) projection: ProjectionMask,
+    pub projection: ProjectionMask,
 
-    pub(crate) filter: Option<RowFilter>,
+    pub filter: Option<RowFilter>,
 
-    pub(crate) selection: Option<RowSelection>,
+    pub selection: Option<RowSelection>,
 
-    pub(crate) limit: Option<usize>,
+    pub limit: Option<usize>,
 
-    pub(crate) offset: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl<T> ArrowReaderBuilder<T> {
@@ -319,7 +319,7 @@ impl ArrowReaderOptions {
     ///
     /// // Create the reader and read the data using the supplied schema.
     /// let mut reader = builder.build().unwrap();
-    /// let _batch = reader.next().unwrap().unwrap();   
+    /// let _batch = reader.next().unwrap().unwrap();
     /// ```
     pub fn with_schema(self, schema: SchemaRef) -> Self {
         Self {
