@@ -390,7 +390,18 @@ macro_rules! native_type_float_op {
 
             #[inline]
             fn compare(self, rhs: Self) -> Ordering {
-                <$t>::total_cmp(&self, &rhs)
+                // blaze:
+                // nan-safe version according to semantics where NaN == NaN and
+                // NaN is greater than any non-NaN double.
+                if self.is_nan() && rhs.is_nan() {
+                    Ordering::Equal
+                } else if self.is_nan() {
+                    Ordering::Greater
+                } else if rhs.is_nan() {
+                    Ordering::Less
+                } else {
+                    <$t>::total_cmp(&self, &rhs)
+                }
             }
 
             #[inline]
@@ -398,6 +409,12 @@ macro_rules! native_type_float_op {
                 // Equivalent to `self.total_cmp(&rhs).is_eq()`
                 // but LLVM isn't able to realise this is bitwise equality
                 // https://rust.godbolt.org/z/347nWGxoW
+                // blaze:
+                // nan-safe version according to semantics where NaN == NaN and
+                // NaN is greater than any non-NaN double.
+                if self.is_nan() && rhs.is_nan() {
+                    return true;
+                }
                 self.to_bits() == rhs.to_bits()
             }
         }
