@@ -84,6 +84,12 @@ pub trait MetadataSuffixFetch: MetadataFetch {
     /// Note the returned type is a boxed future, often created by
     /// [FutureExt::boxed]. See the trait documentation for an example
     fn fetch_suffix(&mut self, suffix: usize) -> BoxFuture<'_, Result<Bytes>>;
+
+    /// Sync version of get_bytes
+    /// this is only used by blaze, for reading dictionary values for row group pruning
+    fn get_bytes_sync(&mut self, range: Range<usize>) -> Result<Bytes> {
+        unimplemented!("blaze only")
+    }
 }
 
 /// An asynchronous interface to load [`ParquetMetaData`] from an async source
