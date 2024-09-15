@@ -129,17 +129,7 @@ pub fn from_thrift(
             // Number of nulls recorded, when it is not available, we just mark it as 0.
             // TODO this should be `None` if there is no information about NULLS.
             // see https://github.com/apache/arrow-rs/pull/6216/files
-            let null_count = stats.null_count.unwrap_or(0);
-
-            if null_count < 0 {
-                return Err(ParquetError::General(format!(
-                    "Statistics null count is negative {}",
-                    null_count
-                )));
-            }
-
-            // Generic null count.
-            let null_count = Some(null_count as u64);
+            let null_count = stats.null_count.and_then(|value| u64::try_from(value).ok());
             // Generic distinct count (count of distinct values occurring)
             let distinct_count = stats.distinct_count.map(|value| value as u64);
             // Whether or not statistics use deprecated min/max fields.

@@ -1320,7 +1320,7 @@ impl<'a> StatisticsConverter<'a> {
         Ok(Self {
             parquet_column_index: parquet_index,
             arrow_field,
-            missing_null_counts_as_zero: true,
+            missing_null_counts_as_zero: false,
             physical_type: parquet_index.map(|idx| parquet_schema.column(idx).physical_type()),
         })
     }
