@@ -145,6 +145,12 @@ pub trait AsyncFileReader: Send {
     /// allowing fine-grained control over how metadata is sourced, in particular allowing
     /// for caching, pre-fetching, catalog metadata, etc...
     fn get_metadata(&mut self) -> BoxFuture<'_, Result<Arc<ParquetMetaData>>>;
+
+    /// Sync version of get_bytes
+    /// this is only used by blaze, for reading dictionary values for row group pruning
+    fn get_bytes_sync(&mut self, range: Range<usize>) -> Result<Bytes> {
+        unimplemented!("blaze only")
+    }
 }
 
 impl AsyncFileReader for Box<dyn AsyncFileReader> {
@@ -158,6 +164,10 @@ impl AsyncFileReader for Box<dyn AsyncFileReader> {
 
     fn get_metadata(&mut self) -> BoxFuture<'_, Result<Arc<ParquetMetaData>>> {
         self.as_mut().get_metadata()
+    }
+
+    fn get_bytes_sync(&mut self, range: Range<usize>) -> Result<Bytes> {
+        self.as_mut().get_bytes_sync(range)
     }
 }
 
