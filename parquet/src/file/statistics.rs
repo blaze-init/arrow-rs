@@ -128,7 +128,8 @@ pub fn from_thrift(
             // Number of nulls recorded, when it is not available, we just mark it as 0.
             // TODO this should be `None` if there is no information about NULLS.
             // see https://github.com/apache/arrow-rs/pull/6216/files
-            let null_count = stats.null_count.unwrap_or(0);
+            let null_count = stats.null_count.unwrap_or(0)
+                .max(0); // blaze - fix 'Statistics null count is negative (-1)' error
 
             if null_count < 0 {
                 return Err(ParquetError::General(format!(
