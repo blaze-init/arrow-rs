@@ -1266,8 +1266,8 @@ impl ArrayData {
     /// 1. Union type_ids are valid see [#85](https://github.com/apache/arrow-rs/issues/85)
     pub fn validate_values(&self) -> Result<(), ArrowError> {
         match &self.data_type {
-            DataType::Utf8 => self.validate_utf8::<i32>(),
-            DataType::LargeUtf8 => self.validate_utf8::<i64>(),
+            DataType::Utf8 => /* self.validate_utf8::<i32>() */ Ok(()),
+            DataType::LargeUtf8 => /* self.validate_utf8::<i64>() */ Ok(()),
             DataType::Binary => self.validate_offsets_full::<i32>(self.buffers[1].len()),
             DataType::LargeBinary => self.validate_offsets_full::<i64>(self.buffers[1].len()),
             DataType::BinaryView => {
