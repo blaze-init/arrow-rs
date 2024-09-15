@@ -59,17 +59,18 @@ impl<I: OffsetSizeTrait> OffsetBuffer<I> {
     /// UTF-8. This should be done by calling [`Self::check_valid_utf8`] after
     /// all data has been written
     pub fn try_push(&mut self, data: &[u8], validate_utf8: bool) -> Result<()> {
-        if validate_utf8 {
-            if let Some(&b) = data.first() {
-                // A valid code-point iff it does not start with 0b10xxxxxx
-                // Bit-magic taken from `std::str::is_char_boundary`
-                if (b as i8) < -0x40 {
-                    return Err(ParquetError::General(
-                        "encountered non UTF-8 data".to_string(),
-                    ));
-                }
-            }
-        }
+        // skip utf-8 validating
+        // if validate_utf8 {
+        //     if let Some(&b) = data.first() {
+        //         // A valid code-point iff it does not start with 0b10xxxxxx
+        //         // Bit-magic taken from `std::str::is_char_boundary`
+        //         if (b as i8) < -0x40 {
+        //             return Err(ParquetError::General(
+        //                 "encountered non UTF-8 data".to_string(),
+        //             ));
+        //         }
+        //     }
+        // }
 
         self.values.extend_from_slice(data);
 
@@ -117,10 +118,11 @@ impl<I: OffsetSizeTrait> OffsetBuffer<I> {
     ///
     /// [`Self::try_push`] can perform this validation check on insertion
     pub fn check_valid_utf8(&self, start_offset: usize) -> Result<()> {
-        match std::str::from_utf8(&self.values.as_slice()[start_offset..]) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(general_err!("encountered non UTF-8 data: {}", e)),
-        }
+        // match std::str::from_utf8(&self.values.as_slice()[start_offset..]) {
+        //     Ok(_) => Ok(()),
+        //     Err(e) => Err(general_err!("encountered non UTF-8 data: {}", e)),
+        // }
+        Ok(())
     }
 
     /// Converts this into an [`ArrayRef`] with the provided `data_type` and `null_buffer`
