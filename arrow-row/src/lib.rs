@@ -128,6 +128,7 @@
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use compact_bytes::CompactBytes;
 
 use arrow_array::cast::*;
 use arrow_array::types::ArrowDictionaryKeyType;
@@ -666,6 +667,71 @@ impl RowConverter {
         }
 
         Ok(())
+    }
+
+    // for blaze usage
+    pub fn convert_columns_to_owned_bytes(
+        &self,
+        columns: &[ArrayRef],
+    ) -> Result<Vec<CompactBytes>, ArrowError> {
+
+        if columns.len() != self.fields.len() {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "Incorrect number of arrays provided to RowConverter, expected {} got {}",
+                self.fields.len(),
+                columns.len()
+            )));
+        }
+
+        let encoders = columns
+            .iter()
+            .zip(&self.codecs)
+            .zip(self.fields.iter())
+            .map(|((column, codec), field)| {
+                if !column.data_type().equals_datatype(&field.data_type) {
+                    return Err(ArrowError::InvalidArgumentError(format!(
+                        "RowConverter column schema mismatch, expected {} got {}",
+                        field.data_type,
+                        column.data_type()
+                    )));
+                }
+                codec.encoder(column.as_ref())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let lengths = row_lengths(columns, &encoders);
+        if lengths.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // use relative offsets to (1usize as *mut u8), this is very hacky
+        let mut data_slice = unsafe {
+            &mut *std::ptr::slice_from_raw_parts_mut(1 as *mut u8, usize::MAX - 1)
+        };
+        let mut offsets = Vec::with_capacity(lengths.len() + 1);
+
+        offsets.push(1);
+        let rows = lengths
+            .iter()
+            .map(|&len| {
+                let bytes = CompactBytes::from(vec![0; len]);
+                offsets.push(bytes.as_ptr() as usize - 1);
+                bytes
+            })
+            .collect::<Vec<_>>();
+
+        for ((column, field), encoder) in columns.iter().zip(self.fields.iter()).zip(encoders) {
+            // We encode a column at a time to minimise dispatch overheads
+            encode_column(
+                &mut data_slice,
+                &mut offsets,
+                column.as_ref(),
+                field.options,
+                &encoder,
+            )
+        }
+
+        Ok(rows)
     }
 
     /// Convert [`Rows`] columns into [`ArrayRef`]
@@ -1637,6 +1703,97 @@ mod tests {
         assert_eq!(&cols[0], &col);
     }
 
+    #[test]
+    fn test_variable_width_with_owned_bytes() {
+        let col = Arc::new(StringArray::from_iter([
+            Some("hello"),
+            Some("he"),
+            None,
+            Some("foo"),
+            Some(""),
+        ])) as ArrayRef;
+
+        let converter = RowConverter::new(vec![SortField::new(DataType::Utf8)]).unwrap();
+        let row_bytes = converter.convert_columns_to_owned_bytes(&[Arc::clone(&col)]).unwrap();
+
+        assert!(row_bytes[1].as_ref() < row_bytes[0].as_ref());
+        assert!(row_bytes[2].as_ref() < row_bytes[4].as_ref());
+        assert!(row_bytes[3].as_ref() < row_bytes[0].as_ref());
+        assert!(row_bytes[3].as_ref() < row_bytes[1].as_ref());
+
+        let parser = converter.parser();
+        let rows = row_bytes
+            .iter()
+            .map(|bytes| parser.parse(bytes))
+            .collect::<Vec<_>>();
+        let cols = converter.convert_rows(rows).unwrap();
+        assert_eq!(&cols[0], &col);
+
+        let col = Arc::new(BinaryArray::from_iter([
+            None,
+            Some(vec![0_u8; 0]),
+            Some(vec![0_u8; 6]),
+            Some(vec![0_u8; variable::MINI_BLOCK_SIZE]),
+            Some(vec![0_u8; variable::MINI_BLOCK_SIZE + 1]),
+            Some(vec![0_u8; variable::BLOCK_SIZE]),
+            Some(vec![0_u8; variable::BLOCK_SIZE + 1]),
+            Some(vec![1_u8; 6]),
+            Some(vec![1_u8; variable::MINI_BLOCK_SIZE]),
+            Some(vec![1_u8; variable::MINI_BLOCK_SIZE + 1]),
+            Some(vec![1_u8; variable::BLOCK_SIZE]),
+            Some(vec![1_u8; variable::BLOCK_SIZE + 1]),
+            Some(vec![0xFF_u8; 6]),
+            Some(vec![0xFF_u8; variable::MINI_BLOCK_SIZE]),
+            Some(vec![0xFF_u8; variable::MINI_BLOCK_SIZE + 1]),
+            Some(vec![0xFF_u8; variable::BLOCK_SIZE]),
+            Some(vec![0xFF_u8; variable::BLOCK_SIZE + 1]),
+        ])) as ArrayRef;
+
+        let converter = RowConverter::new(vec![SortField::new(DataType::Binary)]).unwrap();
+        let rows = converter.convert_columns(&[Arc::clone(&col)]).unwrap();
+
+        for i in 0..rows.num_rows() {
+            for j in i + 1..rows.num_rows() {
+                assert!(
+                    rows.row(i) < rows.row(j),
+                    "{} < {} - {:?} < {:?}",
+                    i,
+                    j,
+                    rows.row(i),
+                    rows.row(j)
+                );
+            }
+        }
+
+        let cols = converter.convert_rows(&rows).unwrap();
+        assert_eq!(&cols[0], &col);
+
+        let converter = RowConverter::new(vec![SortField::new_with_options(
+            DataType::Binary,
+            SortOptions {
+                descending: true,
+                nulls_first: false,
+            },
+        )])
+            .unwrap();
+        let rows = converter.convert_columns(&[Arc::clone(&col)]).unwrap();
+
+        for i in 0..rows.num_rows() {
+            for j in i + 1..rows.num_rows() {
+                assert!(
+                    rows.row(i) > rows.row(j),
+                    "{} > {} - {:?} > {:?}",
+                    i,
+                    j,
+                    rows.row(i),
+                    rows.row(j)
+                );
+            }
+        }
+
+        let cols = converter.convert_rows(&rows).unwrap();
+        assert_eq!(&cols[0], &col);
+    }
     /// If `exact` is false performs a logical comparison between a and dictionary-encoded b
     fn dictionary_eq(a: &dyn Array, b: &dyn Array) {
         match b.data_type() {
