@@ -45,6 +45,7 @@ arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 
+aligned-vec = "0.6.1"
 half = { version = "2.1", default-features = false }
 
 [dev-dependencies]
