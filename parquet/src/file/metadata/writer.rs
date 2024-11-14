@@ -137,6 +137,8 @@ impl<'a, W: Write> ThriftMetadataWriter<'a, W> {
             column_orders,
             encryption_algorithm: None,
             footer_signing_key_metadata: None,
+            encrypted: None,
+            keyname: None,
         };
 
         // Write file metadata
