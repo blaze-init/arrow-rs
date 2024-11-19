@@ -173,7 +173,8 @@ fn read_page_header<C: ChunkReader>(reader: &C, offset: u64) -> Result<(usize, P
         }
     }
 
-    let input = reader.get_read(offset)?;
+    // blaze: use BufReader to avoid reading in fragments
+    let input = std::io::BufReader::new(reader.get_read(offset)?);
     let mut tracked = TrackedRead(input, 0);
     let mut prot = TCompactInputProtocol::new(&mut tracked);
     let header = PageHeader::read_from_in_protocol(&mut prot)?;
