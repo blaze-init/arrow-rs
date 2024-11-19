@@ -87,7 +87,7 @@ pub trait MetadataSuffixFetch: MetadataFetch {
 
     /// Sync version of get_bytes
     /// this is only used by blaze, for reading dictionary values for row group pruning
-    fn get_bytes_sync(&mut self, range: Range<usize>) -> Result<Bytes> {
+    fn get_bytes_sync(&mut self, range: Range<u64>) -> Result<Bytes> {
         unimplemented!("blaze only")
     }
 }
