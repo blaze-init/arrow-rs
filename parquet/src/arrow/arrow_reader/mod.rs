@@ -953,7 +953,7 @@ mod tests {
     };
     use arrow_array::*;
     use arrow_buffer::{i256, ArrowNativeType, Buffer, IntervalDayTime};
-    use arrow_data::ArrayDataBuilder;
+    use arrow_data::{ArrayData, ArrayDataBuilder};
     use arrow_schema::{
         ArrowError, DataType as ArrowDataType, Field, Fields, Schema, SchemaRef, TimeUnit,
     };
@@ -3976,5 +3976,94 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_read_old_nested_list() {
+        use arrow::datatypes::DataType;
+        use arrow::datatypes::ToByteSlice;
+
+        let testdata = arrow::util::test_util::parquet_test_data();
+        // message my_record {
+        //     REQUIRED group a (LIST) {
+        //         REPEATED group array (LIST) {
+        //             REPEATED INT32 array;
+        //         }
+        //     }
+        // }
+        // should be read as list<list<int32>>
+        let path = format!("{testdata}/old_list_structure.parquet");
+        let test_file = File::open(path).unwrap();
+
+        // create expected ListArray
+        let a_values = Int32Array::from(vec![1, 2, 3, 4]);
+
+        // Construct a buffer for value offsets, for the nested array: [[1, 2], [3, 4]]
+        let a_value_offsets = arrow::buffer::Buffer::from([0, 2, 4].to_byte_slice());
+
+        // Construct a list array from the above two
+        let a_list_data = ArrayData::builder(DataType::List(Arc::new(Field::new(
+            "array",
+            DataType::Int32,
+            false,
+        ))))
+        .len(2)
+        .add_buffer(a_value_offsets)
+        .add_child_data(a_values.into_data())
+        .build()
+        .unwrap();
+        let a = ListArray::from(a_list_data);
+
+        let builder = ParquetRecordBatchReaderBuilder::try_new(test_file).unwrap();
+        let mut reader = builder.build().unwrap();
+        let out = reader.next().unwrap().unwrap();
+        assert_eq!(out.num_rows(), 1);
+        assert_eq!(out.num_columns(), 1);
+        // grab first column
+        let c0 = out.column(0);
+        let c0arr = c0.as_any().downcast_ref::<ListArray>().unwrap();
+        // get first row: [[1, 2], [3, 4]]
+        let r0 = c0arr.value(0);
+        let r0arr = r0.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(r0arr, &a);
+    }
+
+    #[test]
+    fn test_map_no_value() {
+        // File schema:
+        // message schema {
+        //   required group my_map (MAP) {
+        //     repeated group key_value {
+        //       required int32 key;
+        //       optional int32 value;
+        //     }
+        //   }
+        //   required group my_map_no_v (MAP) {
+        //     repeated group key_value {
+        //       required int32 key;
+        //     }
+        //   }
+        //   required group my_list (LIST) {
+        //     repeated group list {
+        //       required int32 element;
+        //     }
+        //   }
+        // }
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/map_no_value.parquet");
+        let file = File::open(path).unwrap();
+
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        let out = reader.next().unwrap().unwrap();
+        assert_eq!(out.num_rows(), 3);
+        assert_eq!(out.num_columns(), 3);
+        // my_map_no_v and my_list columns should now be equivalent
+        let c0 = out.column(1).as_list::<i32>();
+        let c1 = out.column(2).as_list::<i32>();
+        assert_eq!(c0.len(), c1.len());
+        c0.iter().zip(c1.iter()).for_each(|(l, r)| assert_eq!(l, r));
     }
 }
