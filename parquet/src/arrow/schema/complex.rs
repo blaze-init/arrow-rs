@@ -189,10 +189,27 @@ impl Visitor {
                 Some(fields)
             }
             Some(d) => {
-                return Err(arrow_err!(
-                    "incompatible arrow schema, expected struct got {}",
-                    d
-                ))
+                // blaze: match old-style array<struct<..>> represented as
+                // `REPEATED group field_nme {..}`
+                let mut old_style_fields = None;
+                if let DataType::List(f) = d {
+                    if f.name() == struct_type.name() {
+                        if let DataType::Struct(fields) = &f.data_type() {
+                            if fields.len() == parquet_fields.len() {
+                                old_style_fields = Some(fields);
+                            }
+                        }
+                    }
+                }
+                match old_style_fields {
+                    Some(fields) => Some(fields),
+                    None => {
+                        return Err(arrow_err!(
+                            "incompatible arrow schema, expected struct got {}",
+                            d
+                        ));
+                    }
+                }
             }
             None => None,
         };
