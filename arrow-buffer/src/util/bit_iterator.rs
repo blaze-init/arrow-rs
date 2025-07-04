@@ -209,6 +209,7 @@ impl<'a> BitIndexIterator<'a> {
 impl<'a> Iterator for BitIndexIterator<'a> {
     type Item = usize;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.current_chunk != 0 {
