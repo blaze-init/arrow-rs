@@ -837,8 +837,8 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
             // So truncation of those types could lead to inaccurate min/max statistics
             Type::FIXED_LEN_BYTE_ARRAY
                 if !matches!(
-                    self.descr.logical_type(),
-                    Some(LogicalType::Decimal { .. }) | Some(LogicalType::Float16)
+                    self.descr.logical_type_ref(),
+                    Some(&LogicalType::Decimal { .. }) | Some(&LogicalType::Float16)
                 ) =>
             {
                 true
@@ -849,6 +849,22 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         }
     }
 
+    /// Returns `true` if this column's logical type is a UTF-8 string.
+    fn is_utf8(&self) -> bool {
+        self.get_descriptor().logical_type_ref() == Some(&LogicalType::String)
+            || self.get_descriptor().converted_type() == ConvertedType::UTF8
+    }
+
+    /// Truncates a binary statistic to at most `truncation_length` bytes.
+    ///
+    /// If truncation is not possible, returns `data`.
+    ///
+    /// The `bool` in the returned tuple indicates whether truncation occurred or not.
+    ///
+    /// UTF-8 Note:
+    /// If the column type indicates UTF-8, and `data` contains valid UTF-8, then the result will
+    /// also remain valid UTF-8, but may be less tnan `truncation_length` bytes to avoid splitting
+    /// on non-character boundaries.
     fn truncate_min_value(&self, truncation_length: Option<usize>, data: &[u8]) -> (Vec<u8>, bool) {
         truncation_length
             .filter(|l| data.len() > *l)
@@ -1233,7 +1249,7 @@ fn update_max<T: ParquetValueType>(descr: &ColumnDescriptor, val: &T, max: &mut 
 fn is_nan<T: ParquetValueType>(descr: &ColumnDescriptor, val: &T) -> bool {
     match T::PHYSICAL_TYPE {
         Type::FLOAT | Type::DOUBLE => val != val,
-        Type::FIXED_LEN_BYTE_ARRAY if descr.logical_type() == Some(LogicalType::Float16) => {
+        Type::FIXED_LEN_BYTE_ARRAY if descr.logical_type_ref() == Some(&LogicalType::Float16) => {
             let val = val.as_bytes();
             let val = f16::from_le_bytes([val[0], val[1]]);
             val.is_nan()
@@ -1265,11 +1281,39 @@ fn update_stat<T: ParquetValueType, F>(
 
 /// Evaluate `a > b` according to underlying logical type.
 fn compare_greater<T: ParquetValueType>(descr: &ColumnDescriptor, a: &T, b: &T) -> bool {
-    if let Some(LogicalType::Integer { is_signed, .. }) = descr.logical_type() {
-        if !is_signed {
-            // need to compare unsigned
-            return a.as_u64().unwrap() > b.as_u64().unwrap();
+    match T::PHYSICAL_TYPE {
+        Type::INT32 | Type::INT64 => {
+            if let Some(LogicalType::Integer {
+                is_signed: false, ..
+            }) = descr.logical_type_ref()
+            {
+                // need to compare unsigned
+                return compare_greater_unsigned_int(a, b);
+            }
+
+            match descr.converted_type() {
+                ConvertedType::UINT_8
+                | ConvertedType::UINT_16
+                | ConvertedType::UINT_32
+                | ConvertedType::UINT_64 => {
+                    return compare_greater_unsigned_int(a, b);
+                }
+                _ => {}
+            };
         }
+        Type::FIXED_LEN_BYTE_ARRAY | Type::BYTE_ARRAY => {
+            if let Some(LogicalType::Decimal { .. }) = descr.logical_type_ref() {
+                return compare_greater_byte_array_decimals(a.as_bytes(), b.as_bytes());
+            }
+            if let ConvertedType::DECIMAL = descr.converted_type() {
+                return compare_greater_byte_array_decimals(a.as_bytes(), b.as_bytes());
+            }
+            if let Some(LogicalType::Float16) = descr.logical_type_ref() {
+                return compare_greater_f16(a.as_bytes(), b.as_bytes());
+            }
+        }
+
+        _ => {}
     }
 
     match descr.converted_type() {
@@ -1339,6 +1383,18 @@ fn has_dictionary_support(kind: Type, props: &WriterProperties) -> bool {
         (Type::FIXED_LEN_BYTE_ARRAY, WriterVersion::PARQUET_2_0) => true,
         _ => true,
     }
+}
+
+#[inline]
+fn compare_greater_unsigned_int<T: ParquetValueType>(a: &T, b: &T) -> bool {
+    a.as_u64().unwrap() > b.as_u64().unwrap()
+}
+
+#[inline]
+fn compare_greater_f16(a: &[u8], b: &[u8]) -> bool {
+    let a = f16::from_le_bytes(a.try_into().unwrap());
+    let b = f16::from_le_bytes(b.try_into().unwrap());
+    a > b
 }
 
 /// Signed comparison of bytes arrays
