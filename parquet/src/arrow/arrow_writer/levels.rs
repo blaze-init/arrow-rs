@@ -541,6 +541,51 @@ impl LevelInfoBuilder {
             }
         }
     }
+
+    /// Determine if the fields are compatible for purposes of constructing `LevelBuilderInfo`.
+    ///
+    /// Fields are compatible if they're the same type. Otherwise if one of them is a dictionary
+    /// and the other is a native array, the dictionary values must have the same type as the
+    /// native array
+    fn types_compatible(a: &DataType, b: &DataType) -> bool {
+        // if the Arrow data types are equal, the types are deemed compatible
+        if a.equals_datatype(b) {
+            return true;
+        }
+
+        // get the values out of the dictionaries
+        let (a, b) = match (a, b) {
+            (DataType::Dictionary(_, va), DataType::Dictionary(_, vb)) => {
+                (va.as_ref(), vb.as_ref())
+            }
+            (DataType::Dictionary(_, v), b) => (v.as_ref(), b),
+            (a, DataType::Dictionary(_, v)) => (a, v.as_ref()),
+            _ => (a, b),
+        };
+
+        // now that we've got the values from one/both dictionaries, if the values
+        // have the same Arrow data type, they're compatible
+        if a == b {
+            return true;
+        }
+
+        // here we have different Arrow data types, but if the array contains the same type of data
+        // then we consider the type compatible
+        match a {
+            // String, StringView and LargeString are compatible
+            DataType::Utf8 => matches!(b, DataType::LargeUtf8 | DataType::Utf8View),
+            DataType::Utf8View => matches!(b, DataType::LargeUtf8 | DataType::Utf8),
+            DataType::LargeUtf8 => matches!(b, DataType::Utf8 | DataType::Utf8View),
+
+            // Binary, BinaryView and LargeBinary are compatible
+            DataType::Binary => matches!(b, DataType::LargeBinary | DataType::BinaryView),
+            DataType::BinaryView => matches!(b, DataType::LargeBinary | DataType::Binary),
+            DataType::LargeBinary => matches!(b, DataType::Binary | DataType::BinaryView),
+
+            // otherwise we have incompatible types
+            _ => false,
+        }
+    }
 }
 /// The data necessary to write a primitive Arrow array to parquet, taking into account
 /// any non-primitive parents it may have in the arrow representation
