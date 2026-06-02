@@ -45,6 +45,8 @@ use crate::data_type::{ByteArray, FixedLenByteArray};
 use crate::encryption::encrypt::FileEncryptor;
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{KeyValue, RowGroupMetaData};
+#[cfg(feature = "external-encryption")]
+use crate::file::properties::ExternalEncryption;
 use crate::file::properties::{WriterProperties, WriterPropertiesPtr};
 use crate::file::reader::{ChunkReader, Length};
 use crate::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
@@ -482,12 +484,23 @@ struct ArrowPageWriter {
     buffer: SharedColumnChunk,
     #[cfg(feature = "encryption")]
     page_encryptor: Option<PageEncryptor>,
+    #[cfg(feature = "external-encryption")]
+    external_encryption: Option<ExternalEncryption>,
 }
 
 impl ArrowPageWriter {
     #[cfg(feature = "encryption")]
     pub fn with_encryptor(mut self, page_encryptor: Option<PageEncryptor>) -> Self {
         self.page_encryptor = page_encryptor;
+        self
+    }
+
+    #[cfg(feature = "external-encryption")]
+    pub fn with_external_encryption(
+        mut self,
+        external_encryption: Option<ExternalEncryption>,
+    ) -> Self {
+        self.external_encryption = external_encryption;
         self
     }
 
@@ -506,6 +519,15 @@ impl PageWriter for ArrowPageWriter {
     fn write_page(&mut self, page: CompressedPage) -> Result<PageWriteSpec> {
         let page = match self.page_encryptor_mut() {
             Some(page_encryptor) => page_encryptor.encrypt_compressed_page(page)?,
+            None => page,
+        };
+
+        #[cfg(feature = "external-encryption")]
+        let page = match self.external_encryption.as_ref() {
+            Some(external) => {
+                let encrypted = external.encrypt_page(page.data())?;
+                page.with_new_compressed_buffer(Bytes::from(encrypted))
+            }
             None => page,
         };
 
@@ -847,6 +869,9 @@ pub fn get_column_writers(
     let mut writers = Vec::with_capacity(arrow.fields.len());
     let mut leaves = parquet.columns().iter();
     let column_factory = ArrowColumnWriterFactory::new();
+    #[cfg(feature = "external-encryption")]
+    let column_factory =
+        column_factory.with_external_encryption(props.external_encryption().cloned());
     for field in &arrow.fields {
         column_factory.get_arrow_column_writer(
             field.data_type(),
@@ -871,6 +896,9 @@ fn get_column_writers_with_encryptor(
     let mut leaves = parquet.columns().iter();
     let column_factory =
         ArrowColumnWriterFactory::new().with_file_encryptor(row_group_index, file_encryptor);
+    #[cfg(feature = "external-encryption")]
+    let column_factory =
+        column_factory.with_external_encryption(props.external_encryption().cloned());
     for field in &arrow.fields {
         column_factory.get_arrow_column_writer(
             field.data_type(),
@@ -888,6 +916,8 @@ struct ArrowColumnWriterFactory {
     row_group_index: usize,
     #[cfg(feature = "encryption")]
     file_encryptor: Option<Arc<FileEncryptor>>,
+    #[cfg(feature = "external-encryption")]
+    external_encryption: Option<ExternalEncryption>,
 }
 
 impl ArrowColumnWriterFactory {
@@ -897,6 +927,8 @@ impl ArrowColumnWriterFactory {
             row_group_index: 0,
             #[cfg(feature = "encryption")]
             file_encryptor: None,
+            #[cfg(feature = "external-encryption")]
+            external_encryption: None,
         }
     }
 
@@ -911,25 +943,44 @@ impl ArrowColumnWriterFactory {
         self
     }
 
-    #[cfg(feature = "encryption")]
+    #[cfg(feature = "external-encryption")]
+    pub fn with_external_encryption(
+        mut self,
+        external_encryption: Option<ExternalEncryption>,
+    ) -> Self {
+        self.external_encryption = external_encryption;
+        self
+    }
+
+    #[cfg(any(feature = "encryption", feature = "external-encryption"))]
     fn create_page_writer(
         &self,
         column_descriptor: &ColumnDescPtr,
         column_index: usize,
     ) -> Result<Box<ArrowPageWriter>> {
-        let column_path = column_descriptor.path().string();
-        let page_encryptor = PageEncryptor::create_if_column_encrypted(
-            &self.file_encryptor,
-            self.row_group_index,
-            column_index,
-            &column_path,
-        )?;
-        Ok(Box::new(
-            ArrowPageWriter::default().with_encryptor(page_encryptor),
-        ))
+        #[cfg(feature = "encryption")]
+        let page_encryptor = {
+            let column_path = column_descriptor.path().string();
+            PageEncryptor::create_if_column_encrypted(
+                &self.file_encryptor,
+                self.row_group_index,
+                column_index,
+                &column_path,
+            )?
+        };
+
+        #[cfg(not(feature = "encryption"))]
+        let _ = (column_descriptor, column_index);
+
+        let page_writer = ArrowPageWriter::default();
+        #[cfg(feature = "encryption")]
+        let page_writer = page_writer.with_encryptor(page_encryptor);
+        #[cfg(feature = "external-encryption")]
+        let page_writer = page_writer.with_external_encryption(self.external_encryption.clone());
+        Ok(Box::new(page_writer))
     }
 
-    #[cfg(not(feature = "encryption"))]
+    #[cfg(not(any(feature = "encryption", feature = "external-encryption")))]
     fn create_page_writer(
         &self,
         _column_descriptor: &ColumnDescPtr,

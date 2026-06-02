@@ -27,6 +27,7 @@ use crate::errors::ParquetError;
 use crate::errors::Result;
 use crate::file::metadata::{KeyValue, ParquetMetaData};
 use crate::file::page_index::index::Index;
+use crate::file::properties::{FooterFieldOverrides, FooterFieldValue};
 use crate::file::writer::{get_file_magic, TrackedWrite};
 use crate::format::EncryptionAlgorithm;
 #[cfg(feature = "encryption")]
@@ -37,7 +38,223 @@ use crate::schema::types::{SchemaDescPtr, SchemaDescriptor, TypePtr};
 use crate::thrift::TSerializable;
 use std::io::Write;
 use std::sync::Arc;
-use thrift::protocol::TCompactOutputProtocol;
+use thrift::protocol::{
+    TCompactOutputProtocol, TFieldIdentifier, TListIdentifier, TMapIdentifier, TMessageIdentifier,
+    TOutputProtocol, TSetIdentifier, TStructIdentifier, TType,
+};
+
+/// Proxy [`TOutputProtocol`] that intercepts `write_field_begin` for overridden field IDs,
+/// skips the standard field data, and injects override values at `write_field_stop`.
+struct OverrideOutputProtocol<'a, W: Write> {
+    inner: &'a mut TCompactOutputProtocol<W>,
+    overrides: &'a FooterFieldOverrides,
+    skipping_field_id: Option<i16>,
+    struct_depth: u32,
+}
+
+impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
+    fn write_message_begin(&mut self, id: &TMessageIdentifier) -> thrift::Result<()> {
+        self.inner.write_message_begin(id)
+    }
+    fn write_message_end(&mut self) -> thrift::Result<()> {
+        self.inner.write_message_end()
+    }
+    fn write_struct_begin(&mut self, id: &TStructIdentifier) -> thrift::Result<()> {
+        self.struct_depth += 1;
+        self.inner.write_struct_begin(id)
+    }
+    fn write_struct_end(&mut self) -> thrift::Result<()> {
+        self.struct_depth -= 1;
+        self.inner.write_struct_end()
+    }
+
+    fn write_field_begin(&mut self, id: &TFieldIdentifier) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        // Only suppress fields at the FileMetaData struct level (depth 1)
+        if self.struct_depth == 1 && id.id.is_some_and(|fid| self.overrides.contains_key(&fid)) {
+            self.skipping_field_id = id.id;
+            return Ok(());
+        }
+        self.inner.write_field_begin(id)
+    }
+    fn write_field_end(&mut self) -> thrift::Result<()> {
+        if self.skipping_field_id.take().is_some() {
+            return Ok(());
+        }
+        self.inner.write_field_end()
+    }
+
+    fn write_field_stop(&mut self) -> thrift::Result<()> {
+        if self.struct_depth != 1 {
+            return self.inner.write_field_stop();
+        }
+        let mut field_ids: Vec<i16> = self.overrides.keys().copied().collect();
+        field_ids.sort();
+        for field_id in field_ids {
+            let entry = &self.overrides[&field_id];
+            match &entry.value {
+                FooterFieldValue::Bool(v) => {
+                    self.inner.write_field_begin(&TFieldIdentifier::new(
+                        entry.name.as_str(),
+                        TType::Bool,
+                        field_id,
+                    ))?;
+                    self.inner.write_bool(*v)?;
+                    self.inner.write_field_end()?;
+                }
+                FooterFieldValue::String(v) => {
+                    self.inner.write_field_begin(&TFieldIdentifier::new(
+                        entry.name.as_str(),
+                        TType::String,
+                        field_id,
+                    ))?;
+                    self.inner.write_string(v)?;
+                    self.inner.write_field_end()?;
+                }
+                FooterFieldValue::Int32(v) => {
+                    self.inner.write_field_begin(&TFieldIdentifier::new(
+                        entry.name.as_str(),
+                        TType::I32,
+                        field_id,
+                    ))?;
+                    self.inner.write_i32(*v)?;
+                    self.inner.write_field_end()?;
+                }
+                FooterFieldValue::Int64(v) => {
+                    self.inner.write_field_begin(&TFieldIdentifier::new(
+                        entry.name.as_str(),
+                        TType::I64,
+                        field_id,
+                    ))?;
+                    self.inner.write_i64(*v)?;
+                    self.inner.write_field_end()?;
+                }
+                FooterFieldValue::Bytes(v) => {
+                    self.inner.write_field_begin(&TFieldIdentifier::new(
+                        entry.name.as_str(),
+                        TType::String,
+                        field_id,
+                    ))?;
+                    self.inner.write_bytes(v)?;
+                    self.inner.write_field_end()?;
+                }
+            }
+        }
+        self.inner.write_field_stop()
+    }
+
+    fn write_bool(&mut self, v: bool) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_bool(v)
+    }
+    fn write_byte(&mut self, v: u8) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_byte(v)
+    }
+    fn write_i8(&mut self, v: i8) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_i8(v)
+    }
+    fn write_i16(&mut self, v: i16) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_i16(v)
+    }
+    fn write_i32(&mut self, v: i32) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_i32(v)
+    }
+    fn write_i64(&mut self, v: i64) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_i64(v)
+    }
+    fn write_double(&mut self, v: f64) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_double(v)
+    }
+    fn write_string(&mut self, v: &str) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_string(v)
+    }
+    fn write_bytes(&mut self, v: &[u8]) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_bytes(v)
+    }
+    fn write_list_begin(&mut self, id: &TListIdentifier) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_list_begin(id)
+    }
+    fn write_list_end(&mut self) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_list_end()
+    }
+    fn write_set_begin(&mut self, id: &TSetIdentifier) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_set_begin(id)
+    }
+    fn write_set_end(&mut self) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_set_end()
+    }
+    fn write_map_begin(&mut self, id: &TMapIdentifier) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_map_begin(id)
+    }
+    fn write_map_end(&mut self) -> thrift::Result<()> {
+        if self.skipping_field_id.is_some() {
+            return Ok(());
+        }
+        self.inner.write_map_end()
+    }
+    fn flush(&mut self) -> thrift::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn write_metadata_with_overrides(
+    file_metadata: &FileMetaData,
+    overrides: &FooterFieldOverrides,
+    sink: impl Write,
+) -> Result<()> {
+    let mut protocol = TCompactOutputProtocol::new(sink);
+    let mut wrapper = OverrideOutputProtocol {
+        inner: &mut protocol,
+        overrides,
+        skipping_field_id: None,
+        struct_depth: 0,
+    };
+    file_metadata.write_to_out_protocol(&mut wrapper)?;
+    Ok(())
+}
 
 /// Writes `crate::file::metadata` structures to a thrift encoded byte stream
 ///
@@ -221,6 +438,11 @@ impl<'a, W: Write> ThriftMetadataWriter<'a, W> {
     #[cfg(feature = "encryption")]
     pub fn with_file_encryptor(mut self, file_encryptor: Option<Arc<FileEncryptor>>) -> Self {
         self.object_writer = self.object_writer.with_file_encryptor(file_encryptor);
+        self
+    }
+
+    pub fn with_footer_field_overrides(mut self, overrides: Option<FooterFieldOverrides>) -> Self {
+        self.object_writer.footer_field_overrides = overrides;
         self
     }
 }
@@ -424,6 +646,7 @@ impl<'a, W: Write> ParquetMetaDataWriter<'a, W> {
 struct MetadataObjectWriter {
     #[cfg(feature = "encryption")]
     file_encryptor: Option<Arc<FileEncryptor>>,
+    footer_field_overrides: Option<FooterFieldOverrides>,
 }
 
 impl MetadataObjectWriter {
@@ -440,7 +663,10 @@ impl MetadataObjectWriter {
 impl MetadataObjectWriter {
     /// Write [`FileMetaData`] in Thrift format
     fn write_file_metadata(&self, file_metadata: &FileMetaData, sink: impl Write) -> Result<()> {
-        Self::write_object(file_metadata, sink)
+        match &self.footer_field_overrides {
+            Some(overrides) => write_metadata_with_overrides(file_metadata, overrides, sink),
+            None => Self::write_object(file_metadata, sink),
+        }
     }
 
     /// Write a column [`OffsetIndex`] in Thrift format
@@ -519,7 +745,12 @@ impl MetadataObjectWriter {
                 let mut encryptor = file_encryptor.get_footer_encryptor()?;
                 write_signed_plaintext_object(file_metadata, &mut encryptor, &mut sink, &aad)
             }
-            _ => Self::write_object(file_metadata, &mut sink),
+            _ => match &self.footer_field_overrides {
+                Some(overrides) => {
+                    write_metadata_with_overrides(file_metadata, overrides, &mut sink)
+                }
+                None => Self::write_object(file_metadata, &mut sink),
+            },
         }
     }
 

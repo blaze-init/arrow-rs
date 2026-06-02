@@ -353,6 +353,8 @@ impl<W: Write + Send> SerializedFileWriter<W> {
             encoder = encoder.with_file_encryptor(self.file_encryptor.clone());
         }
 
+        encoder = encoder.with_footer_field_overrides(self.props.footer_field_overrides().cloned());
+
         if let Some(key_value_metadata) = key_value_metadata {
             encoder = encoder.with_key_value_metadata(key_value_metadata)
         }

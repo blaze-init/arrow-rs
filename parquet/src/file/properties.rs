@@ -20,11 +20,42 @@ use crate::basic::{Compression, Encoding};
 use crate::compression::{CodecOptions, CodecOptionsBuilder};
 #[cfg(feature = "encryption")]
 use crate::encryption::encrypt::FileEncryptionProperties;
+use crate::errors::Result;
 use crate::file::metadata::KeyValue;
 use crate::format::SortingColumn;
 use crate::schema::types::ColumnPath;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
+
+#[cfg(feature = "external-encryption")]
+pub type ExternalEncryptFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>> + Send + Sync>;
+
+#[cfg(feature = "external-encryption")]
+#[derive(Clone)]
+pub struct ExternalEncryption {
+    encryptor: ExternalEncryptFn,
+}
+
+#[cfg(feature = "external-encryption")]
+impl std::fmt::Debug for ExternalEncryption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalEncryption")
+            .field("encryptor", &"<fn>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "external-encryption")]
+impl ExternalEncryption {
+    pub fn new(encryptor: ExternalEncryptFn) -> Self {
+        Self { encryptor }
+    }
+
+    pub(crate) fn encrypt_page(&self, data: &[u8]) -> Result<Vec<u8>> {
+        (self.encryptor)(data)
+    }
+}
 
 /// Default value for [`WriterProperties::data_page_size_limit`]
 pub const DEFAULT_PAGE_SIZE: usize = 1024 * 1024;
@@ -171,8 +202,11 @@ pub struct WriterProperties {
     column_index_truncate_length: Option<usize>,
     statistics_truncate_length: Option<usize>,
     coerce_types: bool,
+    pub(crate) footer_field_overrides: Option<FooterFieldOverrides>,
     #[cfg(feature = "encryption")]
     pub(crate) file_encryption_properties: Option<FileEncryptionProperties>,
+    #[cfg(feature = "external-encryption")]
+    external_encryption: Option<ExternalEncryption>,
 }
 
 impl Default for WriterProperties {
@@ -320,6 +354,11 @@ impl WriterProperties {
         self.coerce_types
     }
 
+    /// Returns the footer field overrides, if set.
+    pub fn footer_field_overrides(&self) -> Option<&FooterFieldOverrides> {
+        self.footer_field_overrides.as_ref()
+    }
+
     /// Returns encoding for a data page, when dictionary encoding is enabled.
     ///
     /// This is not configurable.
@@ -418,7 +457,36 @@ impl WriterProperties {
     pub fn file_encryption_properties(&self) -> Option<&FileEncryptionProperties> {
         self.file_encryption_properties.as_ref()
     }
+
+    #[cfg(feature = "external-encryption")]
+    pub fn external_encryption(&self) -> Option<&ExternalEncryption> {
+        self.external_encryption.as_ref()
+    }
 }
+
+/// Footer field override value types.
+///
+/// Since footer field overrides allow attaching arbitrary values to fields 8 and 9
+/// of the parquet `FileMetaData` thrift struct, the caller must provide the value
+/// in one of the supported forms.
+#[derive(Debug, Clone)]
+pub enum FooterFieldValue {
+    Bool(bool),
+    String(String),
+    Int32(i32),
+    Int64(i64),
+    Bytes(Vec<u8>),
+}
+
+/// A single footer field override that names and values a custom field.
+#[derive(Debug, Clone)]
+pub struct FooterFieldOverride {
+    pub name: String,
+    pub value: FooterFieldValue,
+}
+
+/// A map from field id (8 or 9) to the override value.
+pub type FooterFieldOverrides = BTreeMap<i16, FooterFieldOverride>;
 
 /// Builder for  [`WriterProperties`] Parquet writer configuration.
 ///
@@ -440,8 +508,11 @@ pub struct WriterPropertiesBuilder {
     column_index_truncate_length: Option<usize>,
     statistics_truncate_length: Option<usize>,
     coerce_types: bool,
+    footer_field_overrides: Option<FooterFieldOverrides>,
     #[cfg(feature = "encryption")]
     file_encryption_properties: Option<FileEncryptionProperties>,
+    #[cfg(feature = "external-encryption")]
+    external_encryption: Option<ExternalEncryption>,
 }
 
 impl WriterPropertiesBuilder {
@@ -464,13 +535,37 @@ impl WriterPropertiesBuilder {
             column_index_truncate_length: DEFAULT_COLUMN_INDEX_TRUNCATE_LENGTH,
             statistics_truncate_length: DEFAULT_STATISTICS_TRUNCATE_LENGTH,
             coerce_types: DEFAULT_COERCE_TYPES,
+            footer_field_overrides: None,
             #[cfg(feature = "encryption")]
             file_encryption_properties: None,
+            #[cfg(feature = "external-encryption")]
+            external_encryption: None,
         }
     }
 
     /// Finalizes the configuration and returns immutable writer properties struct.
     pub fn build(self) -> WriterProperties {
+        if let Some(overrides) = &self.footer_field_overrides {
+            for &id in overrides.keys() {
+                if id != 8 && id != 9 {
+                    panic!(
+                        "footer field override for field id {} is not allowed; only 8 and 9 are supported",
+                        id
+                    );
+                }
+            }
+        }
+
+        #[cfg(feature = "encryption")]
+        if self.footer_field_overrides.is_some() && self.file_encryption_properties.is_some() {
+            panic!("footer_field_overrides and file_encryption_properties are mutually exclusive");
+        }
+
+        #[cfg(all(feature = "encryption", feature = "external-encryption"))]
+        if self.file_encryption_properties.is_some() && self.external_encryption.is_some() {
+            panic!("file_encryption_properties and external_encryption are mutually exclusive");
+        }
+
         WriterProperties {
             data_page_size_limit: self.data_page_size_limit,
             dictionary_page_size_limit: self.dictionary_page_size_limit,
@@ -488,8 +583,11 @@ impl WriterPropertiesBuilder {
             column_index_truncate_length: self.column_index_truncate_length,
             statistics_truncate_length: self.statistics_truncate_length,
             coerce_types: self.coerce_types,
+            footer_field_overrides: self.footer_field_overrides,
             #[cfg(feature = "encryption")]
             file_encryption_properties: self.file_encryption_properties,
+            #[cfg(feature = "external-encryption")]
+            external_encryption: self.external_encryption,
         }
     }
 
@@ -698,6 +796,18 @@ impl WriterPropertiesBuilder {
         self
     }
 
+    /// Sets footer field overrides (defaults to `None`).
+    ///
+    /// Only field ids 8 and 9 are allowed. Providing any other value will
+    /// trigger a panic at `build()` time.
+    pub fn with_footer_field_overrides(
+        mut self,
+        footer_field_overrides: FooterFieldOverrides,
+    ) -> Self {
+        self.footer_field_overrides = Some(footer_field_overrides);
+        self
+    }
+
     /// Sets FileEncryptionProperties (defaults to `None`)
     #[cfg(feature = "encryption")]
     pub fn with_file_encryption_properties(
@@ -705,6 +815,15 @@ impl WriterPropertiesBuilder {
         file_encryption_properties: FileEncryptionProperties,
     ) -> Self {
         self.file_encryption_properties = Some(file_encryption_properties);
+        self
+    }
+
+    /// Sets external encryption for page data (defaults to `None`).
+    ///
+    /// Mutually exclusive with [`with_file_encryption_properties`](Self::with_file_encryption_properties).
+    #[cfg(feature = "external-encryption")]
+    pub fn with_external_encryption(mut self, encryption: ExternalEncryption) -> Self {
+        self.external_encryption = Some(encryption);
         self
     }
 
@@ -1498,5 +1617,73 @@ mod tests {
                 assert_eq!(e, "Invalid statistics arg: ChunkAndPage");
             }
         }
+    }
+
+    #[test]
+    fn test_footer_field_override_field_8() {
+        let overrides = BTreeMap::from([(
+            8,
+            FooterFieldOverride {
+                name: "encrypted".to_string(),
+                value: FooterFieldValue::Bool(true),
+            },
+        )]);
+        let props = WriterProperties::builder()
+            .with_footer_field_overrides(overrides)
+            .build();
+        assert!(props.footer_field_overrides().is_some());
+    }
+
+    #[test]
+    fn test_footer_field_override_field_9() {
+        let overrides = BTreeMap::from([(
+            9,
+            FooterFieldOverride {
+                name: "keyname".to_string(),
+                value: FooterFieldValue::String("my_key".to_string()),
+            },
+        )]);
+        let props = WriterProperties::builder()
+            .with_footer_field_overrides(overrides)
+            .build();
+        assert!(props.footer_field_overrides().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "only 8 and 9 are supported")]
+    fn test_footer_field_override_invalid_field_id() {
+        let overrides = BTreeMap::from([(
+            10,
+            FooterFieldOverride {
+                name: "invalid".to_string(),
+                value: FooterFieldValue::Bool(false),
+            },
+        )]);
+        WriterProperties::builder()
+            .with_footer_field_overrides(overrides)
+            .build();
+    }
+
+    #[test]
+    #[cfg(feature = "encryption")]
+    #[should_panic(
+        expected = "footer_field_overrides and file_encryption_properties are mutually exclusive"
+    )]
+    fn test_footer_field_override_mutual_exclusion_with_encryption() {
+        use crate::encryption::encrypt::FileEncryptionProperties;
+        let overrides = BTreeMap::from([(
+            8,
+            FooterFieldOverride {
+                name: "encrypted".to_string(),
+                value: FooterFieldValue::Bool(true),
+            },
+        )]);
+        let fe_props = FileEncryptionProperties::builder(b"0123456789012345".to_vec())
+            .build()
+            .unwrap();
+        WriterProperties::builder()
+            .with_footer_field_overrides(overrides)
+            .with_file_encryption_properties(fe_props)
+            .build();
     }
 }
