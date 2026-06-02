@@ -45,11 +45,80 @@ use thrift::protocol::{
 
 /// Proxy [`TOutputProtocol`] that intercepts `write_field_begin` for overridden field IDs,
 /// skips the standard field data, and injects override values at `write_field_stop`.
+#[derive(Debug, Default)]
+struct OverrideState {
+    structs: u32,
+    skip: Option<u32>,
+}
+
+impl OverrideState {
+    fn begin(&mut self) -> bool {
+        match self.skip.as_mut() {
+            Some(depth) => {
+                *depth += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn end(&mut self) -> bool {
+        match self.skip.as_mut() {
+            Some(depth) => {
+                debug_assert!(*depth > 0);
+                *depth = depth.saturating_sub(1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn field(&mut self) -> bool {
+        match self.skip {
+            Some(0) => {
+                self.skip = None;
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+}
+
 struct OverrideOutputProtocol<'a, W: Write> {
     inner: &'a mut TCompactOutputProtocol<W>,
     overrides: &'a FooterFieldOverrides,
-    skipping_field_id: Option<i16>,
-    struct_depth: u32,
+    state: OverrideState,
+}
+
+macro_rules! value {
+    ($method:ident($value_ty:ty)) => {
+        fn $method(&mut self, v: $value_ty) -> thrift::Result<()> {
+            if self.state.skip.is_some() {
+                return Ok(());
+            }
+            self.inner.$method(v)
+        }
+    };
+}
+
+macro_rules! container {
+    (begin $method:ident($id_ty:ty)) => {
+        fn $method(&mut self, id: &$id_ty) -> thrift::Result<()> {
+            if self.state.begin() {
+                return Ok(());
+            }
+            self.inner.$method(id)
+        }
+    };
+    (end $method:ident) => {
+        fn $method(&mut self) -> thrift::Result<()> {
+            if self.state.end() {
+                return Ok(());
+            }
+            self.inner.$method()
+        }
+    };
 }
 
 impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
@@ -60,34 +129,43 @@ impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
         self.inner.write_message_end()
     }
     fn write_struct_begin(&mut self, id: &TStructIdentifier) -> thrift::Result<()> {
-        self.struct_depth += 1;
+        if self.state.begin() {
+            return Ok(());
+        }
+        self.state.structs += 1;
         self.inner.write_struct_begin(id)
     }
     fn write_struct_end(&mut self) -> thrift::Result<()> {
-        self.struct_depth -= 1;
+        if self.state.end() {
+            return Ok(());
+        }
+        self.state.structs -= 1;
         self.inner.write_struct_end()
     }
 
     fn write_field_begin(&mut self, id: &TFieldIdentifier) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
+        if self.state.skip.is_some() {
             return Ok(());
         }
         // Only suppress fields at the FileMetaData struct level (depth 1)
-        if self.struct_depth == 1 && id.id.is_some_and(|fid| self.overrides.contains_key(&fid)) {
-            self.skipping_field_id = id.id;
+        if self.state.structs == 1 && id.id.is_some_and(|fid| self.overrides.contains_key(&fid)) {
+            self.state.skip = Some(0);
             return Ok(());
         }
         self.inner.write_field_begin(id)
     }
     fn write_field_end(&mut self) -> thrift::Result<()> {
-        if self.skipping_field_id.take().is_some() {
+        if self.state.field() {
             return Ok(());
         }
         self.inner.write_field_end()
     }
 
     fn write_field_stop(&mut self) -> thrift::Result<()> {
-        if self.struct_depth != 1 {
+        if self.state.skip.is_some() {
+            return Ok(());
+        }
+        if self.state.structs != 1 {
             return self.inner.write_field_stop();
         }
         let mut field_ids: Vec<i16> = self.overrides.keys().copied().collect();
@@ -145,96 +223,23 @@ impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
         self.inner.write_field_stop()
     }
 
-    fn write_bool(&mut self, v: bool) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_bool(v)
-    }
-    fn write_byte(&mut self, v: u8) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_byte(v)
-    }
-    fn write_i8(&mut self, v: i8) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_i8(v)
-    }
-    fn write_i16(&mut self, v: i16) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_i16(v)
-    }
-    fn write_i32(&mut self, v: i32) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_i32(v)
-    }
-    fn write_i64(&mut self, v: i64) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_i64(v)
-    }
-    fn write_double(&mut self, v: f64) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_double(v)
-    }
-    fn write_string(&mut self, v: &str) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_string(v)
-    }
-    fn write_bytes(&mut self, v: &[u8]) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_bytes(v)
-    }
-    fn write_list_begin(&mut self, id: &TListIdentifier) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_list_begin(id)
-    }
-    fn write_list_end(&mut self) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_list_end()
-    }
-    fn write_set_begin(&mut self, id: &TSetIdentifier) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_set_begin(id)
-    }
-    fn write_set_end(&mut self) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_set_end()
-    }
-    fn write_map_begin(&mut self, id: &TMapIdentifier) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_map_begin(id)
-    }
-    fn write_map_end(&mut self) -> thrift::Result<()> {
-        if self.skipping_field_id.is_some() {
-            return Ok(());
-        }
-        self.inner.write_map_end()
-    }
+    value!(write_bool(bool));
+    value!(write_byte(u8));
+    value!(write_i8(i8));
+    value!(write_i16(i16));
+    value!(write_i32(i32));
+    value!(write_i64(i64));
+    value!(write_double(f64));
+    value!(write_string(&str));
+    value!(write_bytes(&[u8]));
+
+    container!(begin write_list_begin(TListIdentifier));
+    container!(end write_list_end);
+    container!(begin write_set_begin(TSetIdentifier));
+    container!(end write_set_end);
+    container!(begin write_map_begin(TMapIdentifier));
+    container!(end write_map_end);
+
     fn flush(&mut self) -> thrift::Result<()> {
         self.inner.flush()
     }
@@ -249,8 +254,7 @@ fn write_metadata_with_overrides(
     let mut wrapper = OverrideOutputProtocol {
         inner: &mut protocol,
         overrides,
-        skipping_field_id: None,
-        struct_depth: 0,
+        state: OverrideState::default(),
     };
     file_metadata.write_to_out_protocol(&mut wrapper)?;
     Ok(())
@@ -654,6 +658,92 @@ impl MetadataObjectWriter {
     fn write_object(object: &impl TSerializable, sink: impl Write) -> Result<()> {
         let mut protocol = TCompactOutputProtocol::new(sink);
         object.write_to_out_protocol(&mut protocol)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::io::Cursor;
+
+    use crate::file::properties::{FooterFieldOverride, FooterFieldValue};
+
+    use super::OverrideState;
+    use super::*;
+    use thrift::protocol::{TCompactInputProtocol, TInputProtocol};
+
+    #[test]
+    fn override_state_skips_nested_payload_until_outer_field_end() {
+        let mut state = OverrideState {
+            structs: 1,
+            skip: Some(0),
+        };
+
+        assert!(state.begin());
+        assert_eq!(state.skip, Some(1));
+
+        assert!(state.field());
+        assert_eq!(state.skip, Some(1));
+
+        assert!(state.end());
+        assert_eq!(state.skip, Some(0));
+
+        assert!(state.field());
+        assert_eq!(state.skip, None);
+    }
+
+    #[test]
+    fn override_protocol_ignores_field_stop_inside_skipped_struct() -> thrift::Result<()> {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            8,
+            FooterFieldOverride {
+                name: "encrypted".to_string(),
+                value: FooterFieldValue::Bool(true),
+            },
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut protocol = TCompactOutputProtocol::new(&mut buf);
+            let mut wrapper = OverrideOutputProtocol {
+                inner: &mut protocol,
+                overrides: &overrides,
+                state: OverrideState::default(),
+            };
+
+            wrapper.write_struct_begin(&TStructIdentifier::new("FileMetaData"))?;
+            wrapper.write_field_begin(&TFieldIdentifier::new(
+                "encryption_algorithm",
+                TType::Struct,
+                8,
+            ))?;
+            wrapper.write_struct_begin(&TStructIdentifier::new("EncryptionAlgorithm"))?;
+            wrapper.write_field_begin(&TFieldIdentifier::new("AES_GCM_V1", TType::Struct, 1))?;
+            wrapper.write_struct_begin(&TStructIdentifier::new("AesGcmV1"))?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+            wrapper.write_field_end()?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+            wrapper.write_field_end()?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+        }
+
+        let mut cursor = Cursor::new(buf);
+        let mut input = TCompactInputProtocol::new(&mut cursor);
+        input.read_struct_begin()?;
+        let first = input.read_field_begin()?;
+        assert_eq!(first.id, Some(8));
+        assert_eq!(first.field_type, TType::Bool);
+        assert!(input.read_bool()?);
+        input.read_field_end()?;
+
+        let stop = input.read_field_begin()?;
+        assert_eq!(stop.field_type, TType::Stop);
+
         Ok(())
     }
 }

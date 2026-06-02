@@ -29,9 +29,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 #[cfg(feature = "external-encryption")]
+/// Function used to encrypt already-compressed parquet page bytes.
 pub type ExternalEncryptFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>> + Send + Sync>;
 
 #[cfg(feature = "external-encryption")]
+/// External page encryption configuration.
 #[derive(Clone)]
 pub struct ExternalEncryption {
     encryptor: ExternalEncryptFn,
@@ -48,6 +50,7 @@ impl std::fmt::Debug for ExternalEncryption {
 
 #[cfg(feature = "external-encryption")]
 impl ExternalEncryption {
+    /// Creates a new external encryption configuration.
     pub fn new(encryptor: ExternalEncryptFn) -> Self {
         Self { encryptor }
     }
@@ -459,6 +462,7 @@ impl WriterProperties {
     }
 
     #[cfg(feature = "external-encryption")]
+    /// Return external encryption properties.
     pub fn external_encryption(&self) -> Option<&ExternalEncryption> {
         self.external_encryption.as_ref()
     }
@@ -471,17 +475,24 @@ impl WriterProperties {
 /// in one of the supported forms.
 #[derive(Debug, Clone)]
 pub enum FooterFieldValue {
+    /// Boolean override value.
     Bool(bool),
+    /// UTF-8 string override value.
     String(String),
+    /// 32-bit integer override value.
     Int32(i32),
+    /// 64-bit integer override value.
     Int64(i64),
+    /// Binary override value.
     Bytes(Vec<u8>),
 }
 
 /// A single footer field override that names and values a custom field.
 #[derive(Debug, Clone)]
 pub struct FooterFieldOverride {
+    /// Thrift field name to write for the override.
     pub name: String,
+    /// Thrift field value to write for the override.
     pub value: FooterFieldValue,
 }
 
