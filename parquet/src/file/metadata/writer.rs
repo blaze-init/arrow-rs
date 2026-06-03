@@ -664,7 +664,7 @@ impl MetadataObjectWriter {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::io::Cursor;
 
     use crate::file::properties::{FooterFieldOverride, FooterFieldValue};
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn override_protocol_ignores_field_stop_inside_skipped_struct() -> thrift::Result<()> {
-        let mut overrides = BTreeMap::new();
+        let mut overrides = HashMap::new();
         overrides.insert(
             8,
             FooterFieldOverride {

@@ -24,7 +24,7 @@ use crate::errors::Result;
 use crate::file::metadata::KeyValue;
 use crate::format::SortingColumn;
 use crate::schema::types::ColumnPath;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -497,7 +497,7 @@ pub struct FooterFieldOverride {
 }
 
 /// A map from field id (8 or 9) to the override value.
-pub type FooterFieldOverrides = BTreeMap<i16, FooterFieldOverride>;
+pub type FooterFieldOverrides = HashMap<i16, FooterFieldOverride>;
 
 /// Builder for  [`WriterProperties`] Parquet writer configuration.
 ///
@@ -1632,7 +1632,7 @@ mod tests {
 
     #[test]
     fn test_footer_field_override_field_8() {
-        let overrides = BTreeMap::from([(
+        let overrides = HashMap::from([(
             8,
             FooterFieldOverride {
                 name: "encrypted".to_string(),
@@ -1647,7 +1647,7 @@ mod tests {
 
     #[test]
     fn test_footer_field_override_field_9() {
-        let overrides = BTreeMap::from([(
+        let overrides = HashMap::from([(
             9,
             FooterFieldOverride {
                 name: "keyname".to_string(),
@@ -1663,7 +1663,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "only 8 and 9 are supported")]
     fn test_footer_field_override_invalid_field_id() {
-        let overrides = BTreeMap::from([(
+        let overrides = HashMap::from([(
             10,
             FooterFieldOverride {
                 name: "invalid".to_string(),
@@ -1682,7 +1682,7 @@ mod tests {
     )]
     fn test_footer_field_override_mutual_exclusion_with_encryption() {
         use crate::encryption::encrypt::FileEncryptionProperties;
-        let overrides = BTreeMap::from([(
+        let overrides = HashMap::from([(
             8,
             FooterFieldOverride {
                 name: "encrypted".to_string(),

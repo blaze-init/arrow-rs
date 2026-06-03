@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
@@ -34,7 +34,7 @@ fn write_file(overrides: Option<FooterFieldOverrides>) -> Vec<u8> {
 fn test_footer_field_override_field_9_bytes() {
     // Field 9 (footer_signing_key_metadata) is binary/String type.
     // Using Bytes keeps the type compatible with the standard reader.
-    let overrides = BTreeMap::from([(
+    let overrides = HashMap::from([(
         9,
         FooterFieldOverride {
             name: "keyname".to_string(),
@@ -55,7 +55,7 @@ fn test_footer_field_override_field_9_bytes() {
 fn test_footer_field_override_field_8_type_change() {
     // Field 8 (encryption_algorithm) is Struct type; Bool changes the type
     // so the standard reader can't parse it. Only verify structure.
-    let overrides = BTreeMap::from([(
+    let overrides = HashMap::from([(
         8,
         FooterFieldOverride {
             name: "encrypted".to_string(),
@@ -79,7 +79,7 @@ fn test_footer_field_override_field_8_type_change() {
 #[test]
 fn test_footer_field_override_field_8_9_type_change() {
     // Both fields use non-standard types
-    let overrides = BTreeMap::from([
+    let overrides = HashMap::from([
         (
             8,
             FooterFieldOverride {
