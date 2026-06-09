@@ -524,11 +524,11 @@ impl PageWriter for ArrowPageWriter {
 
         #[cfg(feature = "external-encryption")]
         let page = match self.external_encryption.as_ref() {
-            Some(external) => {
+            Some(external) if page.compressed_page().is_data_page() => {
                 let encrypted = external.encrypt_page(page.data())?;
                 page.with_new_compressed_buffer(Bytes::from(encrypted))
             }
-            None => page,
+            _ => page,
         };
 
         let page_header = page.to_thrift_header();
