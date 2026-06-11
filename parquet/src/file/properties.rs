@@ -60,6 +60,38 @@ impl ExternalEncryption {
     }
 }
 
+#[cfg(feature = "external-encryption")]
+/// Function used to decrypt externally-encrypted compressed parquet page bytes.
+pub type ExternalDecryptFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>> + Send + Sync>;
+
+#[cfg(feature = "external-encryption")]
+/// External page decryption configuration.
+#[derive(Clone)]
+pub struct ExternalDecryption {
+    decryptor: ExternalDecryptFn,
+}
+
+#[cfg(feature = "external-encryption")]
+impl std::fmt::Debug for ExternalDecryption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalDecryption")
+            .field("decryptor", &"<fn>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "external-encryption")]
+impl ExternalDecryption {
+    /// Creates a new external decryption configuration.
+    pub fn new(decryptor: ExternalDecryptFn) -> Self {
+        Self { decryptor }
+    }
+
+    pub(crate) fn decrypt_page(&self, data: &[u8]) -> Result<Vec<u8>> {
+        (self.decryptor)(data)
+    }
+}
+
 /// Default value for [`WriterProperties::data_page_size_limit`]
 pub const DEFAULT_PAGE_SIZE: usize = 1024 * 1024;
 /// Default value for [`WriterProperties::write_batch_size`]
