@@ -36,6 +36,8 @@ use crate::encryption::decrypt::FileDecryptionProperties;
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use crate::file::reader::{ChunkReader, SerializedPageReader};
+#[cfg(feature = "external-encryption")]
+use crate::file::properties::ExternalDecryption;
 use crate::schema::types::SchemaDescriptor;
 
 pub(crate) use read_plan::{ReadPlan, ReadPlanBuilder};
@@ -112,6 +114,11 @@ pub struct ArrowReaderBuilder<T> {
     pub limit: Option<usize>,
 
     pub offset: Option<usize>,
+
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_encrypted: bool,
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_decryption: Option<ExternalDecryption>,
 }
 
 impl<T: Debug> Debug for ArrowReaderBuilder<T> {
@@ -146,6 +153,10 @@ impl<T> ArrowReaderBuilder<T> {
             selection: None,
             limit: None,
             offset: None,
+            #[cfg(feature = "external-encryption")]
+            external_encrypted: metadata.external_encrypted,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: metadata.external_decryption,
         }
     }
 
@@ -316,6 +327,13 @@ pub struct ArrowReaderOptions {
     /// If encryption is enabled, the file decryption properties can be provided
     #[cfg(feature = "encryption")]
     pub(crate) file_decryption_properties: Option<FileDecryptionProperties>,
+    /// If true, external page decryption will be applied to data pages.
+    /// Requires `external-encryption` feature.
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_encrypted: bool,
+    /// The external decryption configuration. Ignored unless `external_encrypted` is true.
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_decryption: Option<ExternalDecryption>,
 }
 
 impl ArrowReaderOptions {
@@ -446,6 +464,37 @@ impl ArrowReaderOptions {
     pub fn file_decryption_properties(&self) -> Option<&FileDecryptionProperties> {
         self.file_decryption_properties.as_ref()
     }
+
+    /// If true, external page decryption will be applied to data pages.
+    #[cfg(feature = "external-encryption")]
+    pub fn with_external_encrypted(self, encrypted: bool) -> Self {
+        Self {
+            external_encrypted: encrypted,
+            ..self
+        }
+    }
+
+    /// Provide the external decryption configuration.
+    /// Only used when `external_encrypted` is true.
+    #[cfg(feature = "external-encryption")]
+    pub fn with_external_decryption(self, decryption: ExternalDecryption) -> Self {
+        Self {
+            external_decryption: Some(decryption),
+            ..self
+        }
+    }
+
+    /// Retrieve the currently set external encrypted flag.
+    #[cfg(feature = "external-encryption")]
+    pub fn external_encrypted(&self) -> bool {
+        self.external_encrypted
+    }
+
+    /// Retrieve the currently set external decryption configuration.
+    #[cfg(feature = "external-encryption")]
+    pub fn external_decryption(&self) -> Option<&ExternalDecryption> {
+        self.external_decryption.as_ref()
+    }
 }
 
 /// The metadata necessary to construct a [`ArrowReaderBuilder`]
@@ -470,6 +519,11 @@ pub struct ArrowReaderMetadata {
     pub(crate) schema: SchemaRef,
 
     pub(crate) fields: Option<Arc<ParquetField>>,
+
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_encrypted: bool,
+    #[cfg(feature = "external-encryption")]
+    pub(crate) external_decryption: Option<ExternalDecryption>,
 }
 
 impl ArrowReaderMetadata {
@@ -499,7 +553,12 @@ impl ArrowReaderMetadata {
     /// This function does not attempt to load the PageIndex if not present in the metadata.
     /// See [`Self::load`] for more details.
     pub fn try_new(metadata: Arc<ParquetMetaData>, options: ArrowReaderOptions) -> Result<Self> {
-        match options.supplied_schema {
+        #[cfg(feature = "external-encryption")]
+        let external_encrypted = options.external_encrypted;
+        #[cfg(feature = "external-encryption")]
+        let external_decryption = options.external_decryption.clone();
+
+        let mut result = match options.supplied_schema {
             Some(supplied_schema) => Self::with_supplied_schema(metadata, supplied_schema.clone()),
             None => {
                 let kv_metadata = match options.skip_arrow_metadata {
@@ -517,9 +576,21 @@ impl ArrowReaderMetadata {
                     metadata,
                     schema: Arc::new(schema),
                     fields: fields.map(Arc::new),
+                    #[cfg(feature = "external-encryption")]
+                    external_encrypted: false,
+                    #[cfg(feature = "external-encryption")]
+                    external_decryption: None,
                 })
             }
+        }?;
+
+        #[cfg(feature = "external-encryption")]
+        {
+            result.external_encrypted = external_encrypted;
+            result.external_decryption = external_decryption;
         }
+
+        Ok(result)
     }
 
     fn with_supplied_schema(
@@ -587,6 +658,10 @@ impl ArrowReaderMetadata {
             metadata,
             schema: supplied_schema,
             fields: field_levels.levels.map(Arc::new),
+            #[cfg(feature = "external-encryption")]
+            external_encrypted: false,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: None,
         })
     }
 
