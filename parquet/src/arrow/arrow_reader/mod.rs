@@ -795,6 +795,10 @@ impl<T: ChunkReader + 'static> ParquetRecordBatchReaderBuilder<T> {
             reader: Arc::new(self.input.0),
             metadata: self.metadata,
             row_groups,
+            #[cfg(feature = "external-encryption")]
+            external_encrypted: self.external_encrypted,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: self.external_decryption,
         };
 
         let mut filter = self.filter;
@@ -835,6 +839,10 @@ struct ReaderRowGroups<T: ChunkReader> {
     metadata: Arc<ParquetMetaData>,
     /// Optional list of row group indices to scan
     row_groups: Vec<usize>,
+    #[cfg(feature = "external-encryption")]
+    external_encrypted: bool,
+    #[cfg(feature = "external-encryption")]
+    external_decryption: Option<ExternalDecryption>,
 }
 
 impl<T: ChunkReader + 'static> RowGroups for ReaderRowGroups<T> {
@@ -852,6 +860,10 @@ impl<T: ChunkReader + 'static> RowGroups for ReaderRowGroups<T> {
             reader: self.reader.clone(),
             metadata: self.metadata.clone(),
             row_groups: self.row_groups.clone().into_iter(),
+            #[cfg(feature = "external-encryption")]
+            external_encrypted: self.external_encrypted,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: self.external_decryption.clone(),
         }))
     }
 }
@@ -861,6 +873,10 @@ struct ReaderPageIterator<T: ChunkReader> {
     column_idx: usize,
     row_groups: std::vec::IntoIter<usize>,
     metadata: Arc<ParquetMetaData>,
+    #[cfg(feature = "external-encryption")]
+    external_encrypted: bool,
+    #[cfg(feature = "external-encryption")]
+    external_decryption: Option<ExternalDecryption>,
 }
 
 impl<T: ChunkReader + 'static> ReaderPageIterator<T> {
@@ -877,13 +893,17 @@ impl<T: ChunkReader + 'static> ReaderPageIterator<T> {
         let total_rows = rg.num_rows() as usize;
         let reader = self.reader.clone();
 
-        SerializedPageReader::new(reader, column_chunk_metadata, total_rows, page_locations)?
+        let page_reader = SerializedPageReader::new(reader, column_chunk_metadata, total_rows, page_locations)?
             .add_crypto_context(
                 rg_idx,
                 self.column_idx,
                 self.metadata.as_ref(),
                 column_chunk_metadata,
-            )
+            )?;
+        #[cfg(feature = "external-encryption")]
+        let page_reader = page_reader
+            .with_external_page_decryption(self.external_encrypted, self.external_decryption.clone());
+        Ok(page_reader)
     }
 }
 
