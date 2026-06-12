@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use bytes::Bytes;
+use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::arrow_writer::ArrowWriter;
+use parquet::file::metadata::ParquetMetaDataReader;
 use parquet::file::properties::{
-    FooterFieldOverride, FooterFieldOverrides, FooterFieldValue, WriterProperties,
+    FooterFieldOverride, FooterFieldOverrides, FooterFieldReadOverrides, FooterFieldValue,
+    FooterFieldValueType, WriterProperties,
 };
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
@@ -74,6 +77,81 @@ fn test_footer_field_override_field_8_type_change() {
     );
     assert!(metadata_len > 0);
     assert!(metadata_len as usize <= metadata_len_pos);
+}
+
+#[test]
+fn test_read_footer_field_override_field_8_bool() {
+    let overrides = HashMap::from([(
+        8,
+        FooterFieldOverride {
+            name: "encrypted".to_string(),
+            value: FooterFieldValue::Bool(true),
+        },
+    )]);
+    let buffer = write_file(Some(overrides));
+
+    let read_overrides = FooterFieldReadOverrides::from([(8, FooterFieldValueType::Bool)]);
+    let metadata = ParquetMetaDataReader::new()
+        .with_footer_field_overrides(&read_overrides)
+        .parse_and_finish(&Bytes::from(buffer))
+        .unwrap();
+
+    assert_eq!(metadata.file_metadata().num_rows(), 3);
+    assert_eq!(
+        metadata.file_metadata().footer_field_overrides().get(&8),
+        Some(&FooterFieldValue::Bool(true))
+    );
+}
+
+#[test]
+fn test_read_footer_field_override_field_9_string() {
+    let overrides = HashMap::from([(
+        9,
+        FooterFieldOverride {
+            name: "keyname".to_string(),
+            value: FooterFieldValue::String("my_key".to_string()),
+        },
+    )]);
+    let buffer = write_file(Some(overrides));
+
+    let read_overrides = FooterFieldReadOverrides::from([(9, FooterFieldValueType::String)]);
+    let metadata = ParquetMetaDataReader::new()
+        .with_footer_field_overrides(&read_overrides)
+        .parse_and_finish(&Bytes::from(buffer))
+        .unwrap();
+
+    assert_eq!(metadata.file_metadata().num_rows(), 3);
+    assert_eq!(
+        metadata.file_metadata().footer_field_overrides().get(&9),
+        Some(&FooterFieldValue::String("my_key".to_string()))
+    );
+}
+
+#[test]
+fn test_arrow_reader_options_read_footer_field_override() {
+    let overrides = HashMap::from([(
+        8,
+        FooterFieldOverride {
+            name: "encrypted".to_string(),
+            value: FooterFieldValue::Bool(true),
+        },
+    )]);
+    let buffer = write_file(Some(overrides));
+
+    let read_overrides = FooterFieldReadOverrides::from([(8, FooterFieldValueType::Bool)]);
+    let options = ArrowReaderOptions::new().with_footer_field_overrides(read_overrides);
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new_with_options(Bytes::from(buffer), options)
+            .unwrap();
+
+    assert_eq!(
+        builder
+            .metadata()
+            .file_metadata()
+            .footer_field_overrides()
+            .get(&8),
+        Some(&FooterFieldValue::Bool(true))
+    );
 }
 
 #[test]

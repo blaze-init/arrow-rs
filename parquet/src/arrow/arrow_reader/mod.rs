@@ -37,6 +37,7 @@ use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 #[cfg(feature = "external-encryption")]
 use crate::file::properties::ExternalDecryption;
+use crate::file::properties::FooterFieldReadOverrides;
 use crate::file::reader::{ChunkReader, SerializedPageReader};
 use crate::schema::types::SchemaDescriptor;
 
@@ -330,6 +331,8 @@ pub struct ArrowReaderOptions {
     /// If present, external page decryption will be applied to data pages.
     #[cfg(feature = "external-encryption")]
     pub(crate) external_decryption: Option<ExternalDecryption>,
+    /// Footer field overrides to read from the top-level `FileMetaData` thrift struct.
+    pub(crate) footer_field_overrides: Option<FooterFieldReadOverrides>,
 }
 
 impl ArrowReaderOptions {
@@ -431,6 +434,17 @@ impl ArrowReaderOptions {
         Self { page_index, ..self }
     }
 
+    /// Provide footer field overrides to read from the top-level `FileMetaData` thrift struct.
+    pub fn with_footer_field_overrides(
+        self,
+        footer_field_overrides: FooterFieldReadOverrides,
+    ) -> Self {
+        Self {
+            footer_field_overrides: Some(footer_field_overrides),
+            ..self
+        }
+    }
+
     /// Provide the file decryption properties to use when reading encrypted parquet files.
     ///
     /// If encryption is enabled and the file is encrypted, the `file_decryption_properties` must be provided.
@@ -516,7 +530,10 @@ impl ArrowReaderMetadata {
             ));
         }
 
-        let metadata = ParquetMetaDataReader::new().with_page_indexes(options.page_index);
+        let mut metadata = ParquetMetaDataReader::new().with_page_indexes(options.page_index);
+        if let Some(overrides) = options.footer_field_overrides.as_ref() {
+            metadata = metadata.with_footer_field_overrides(overrides);
+        }
         #[cfg(feature = "encryption")]
         let metadata =
             metadata.with_decryption_properties(options.file_decryption_properties.as_ref());

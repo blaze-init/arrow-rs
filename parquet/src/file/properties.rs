@@ -505,7 +505,7 @@ impl WriterProperties {
 /// Since footer field overrides allow attaching arbitrary values to fields 8 and 9
 /// of the parquet `FileMetaData` thrift struct, the caller must provide the value
 /// in one of the supported forms.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FooterFieldValue {
     /// Boolean override value.
     Bool(bool),
@@ -530,6 +530,27 @@ pub struct FooterFieldOverride {
 
 /// A map from field id (8 or 9) to the override value.
 pub type FooterFieldOverrides = HashMap<i16, FooterFieldOverride>;
+
+/// Footer field override value types used when reading custom footer fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FooterFieldValueType {
+    /// Boolean override value.
+    Bool,
+    /// UTF-8 string override value.
+    String,
+    /// 32-bit integer override value.
+    Int32,
+    /// 64-bit integer override value.
+    Int64,
+    /// Binary override value.
+    Bytes,
+}
+
+/// A map from field id to the expected override value type when reading.
+pub type FooterFieldReadOverrides = HashMap<i16, FooterFieldValueType>;
+
+/// Footer field override values captured while reading.
+pub type FooterFieldValues = HashMap<i16, FooterFieldValue>;
 
 /// Builder for  [`WriterProperties`] Parquet writer configuration.
 ///

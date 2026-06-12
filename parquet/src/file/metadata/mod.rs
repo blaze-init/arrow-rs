@@ -92,6 +92,7 @@
 //!                         * Same name, different struct
 //! ```
 mod memory;
+mod r#override;
 pub(crate) mod reader;
 mod writer;
 
@@ -108,6 +109,7 @@ pub(crate) use crate::file::metadata::memory::HeapSize;
 use crate::file::page_encoding_stats::{self, PageEncodingStats};
 use crate::file::page_index::index::Index;
 use crate::file::page_index::offset_index::OffsetIndexMetaData;
+use crate::file::properties::FooterFieldValues;
 use crate::file::statistics::{self, Statistics};
 use crate::format::ColumnCryptoMetaData as TColumnCryptoMetaData;
 use crate::format::{
@@ -447,6 +449,7 @@ pub struct FileMetaData {
     key_value_metadata: Option<Vec<KeyValue>>,
     schema_descr: SchemaDescPtr,
     column_orders: Option<Vec<ColumnOrder>>,
+    footer_field_overrides: FooterFieldValues,
 }
 
 impl FileMetaData {
@@ -466,7 +469,16 @@ impl FileMetaData {
             key_value_metadata,
             schema_descr,
             column_orders,
+            footer_field_overrides: FooterFieldValues::default(),
         }
+    }
+
+    pub(crate) fn with_footer_field_overrides(
+        mut self,
+        footer_field_overrides: FooterFieldValues,
+    ) -> Self {
+        self.footer_field_overrides = footer_field_overrides;
+        self
     }
 
     /// Returns version of this file.
@@ -494,6 +506,11 @@ impl FileMetaData {
     /// Returns key_value_metadata of this file.
     pub fn key_value_metadata(&self) -> Option<&Vec<KeyValue>> {
         self.key_value_metadata.as_ref()
+    }
+
+    /// Returns custom footer field override values captured while reading.
+    pub fn footer_field_overrides(&self) -> &FooterFieldValues {
+        &self.footer_field_overrides
     }
 
     /// Returns Parquet [`Type`] that describes schema in this file.

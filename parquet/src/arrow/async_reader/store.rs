@@ -204,6 +204,10 @@ impl AsyncFileReader for ParquetObjectReader {
                 .with_offset_indexes(self.preload_offset_index)
                 .with_prefetch_hint(self.metadata_size_hint);
 
+            if let Some(overrides) = options.and_then(|o| o.footer_field_overrides.as_ref()) {
+                metadata = metadata.with_footer_field_overrides(overrides);
+            }
+
             #[cfg(feature = "encryption")]
             if let Some(options) = options {
                 metadata = metadata

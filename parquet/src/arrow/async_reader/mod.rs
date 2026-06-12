@@ -184,8 +184,11 @@ impl<T: AsyncRead + AsyncSeek + Unpin + Send> AsyncFileReader for T {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>> {
         async move {
-            let metadata_reader = ParquetMetaDataReader::new()
+            let mut metadata_reader = ParquetMetaDataReader::new()
                 .with_page_indexes(options.is_some_and(|o| o.page_index));
+            if let Some(overrides) = options.and_then(|o| o.footer_field_overrides.as_ref()) {
+                metadata_reader = metadata_reader.with_footer_field_overrides(overrides);
+            }
 
             #[cfg(feature = "encryption")]
             let metadata_reader = metadata_reader.with_decryption_properties(
@@ -1188,8 +1191,11 @@ mod tests {
             &'a mut self,
             options: Option<&'a ArrowReaderOptions>,
         ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>> {
-            let metadata_reader = ParquetMetaDataReader::new()
+            let mut metadata_reader = ParquetMetaDataReader::new()
                 .with_page_indexes(options.is_some_and(|o| o.page_index));
+            if let Some(overrides) = options.and_then(|o| o.footer_field_overrides.as_ref()) {
+                metadata_reader = metadata_reader.with_footer_field_overrides(overrides);
+            }
             self.metadata = Some(Arc::new(
                 metadata_reader.parse_and_finish(&self.data).unwrap(),
             ));

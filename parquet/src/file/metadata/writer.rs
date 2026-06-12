@@ -25,9 +25,10 @@ use crate::encryption::{
 #[cfg(feature = "encryption")]
 use crate::errors::ParquetError;
 use crate::errors::Result;
+use crate::file::metadata::r#override::write_footer_field_value;
 use crate::file::metadata::{KeyValue, ParquetMetaData};
 use crate::file::page_index::index::Index;
-use crate::file::properties::{FooterFieldOverrides, FooterFieldValue};
+use crate::file::properties::FooterFieldOverrides;
 use crate::file::writer::{get_file_magic, TrackedWrite};
 use crate::format::EncryptionAlgorithm;
 #[cfg(feature = "encryption")]
@@ -40,7 +41,7 @@ use std::io::Write;
 use std::sync::Arc;
 use thrift::protocol::{
     TCompactOutputProtocol, TFieldIdentifier, TListIdentifier, TMapIdentifier, TMessageIdentifier,
-    TOutputProtocol, TSetIdentifier, TStructIdentifier, TType,
+    TOutputProtocol, TSetIdentifier, TStructIdentifier,
 };
 
 /// Proxy [`TOutputProtocol`] that intercepts `write_field_begin` for overridden field IDs,
@@ -172,53 +173,7 @@ impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
         field_ids.sort();
         for field_id in field_ids {
             let entry = &self.overrides[&field_id];
-            match &entry.value {
-                FooterFieldValue::Bool(v) => {
-                    self.inner.write_field_begin(&TFieldIdentifier::new(
-                        entry.name.as_str(),
-                        TType::Bool,
-                        field_id,
-                    ))?;
-                    self.inner.write_bool(*v)?;
-                    self.inner.write_field_end()?;
-                }
-                FooterFieldValue::String(v) => {
-                    self.inner.write_field_begin(&TFieldIdentifier::new(
-                        entry.name.as_str(),
-                        TType::String,
-                        field_id,
-                    ))?;
-                    self.inner.write_string(v)?;
-                    self.inner.write_field_end()?;
-                }
-                FooterFieldValue::Int32(v) => {
-                    self.inner.write_field_begin(&TFieldIdentifier::new(
-                        entry.name.as_str(),
-                        TType::I32,
-                        field_id,
-                    ))?;
-                    self.inner.write_i32(*v)?;
-                    self.inner.write_field_end()?;
-                }
-                FooterFieldValue::Int64(v) => {
-                    self.inner.write_field_begin(&TFieldIdentifier::new(
-                        entry.name.as_str(),
-                        TType::I64,
-                        field_id,
-                    ))?;
-                    self.inner.write_i64(*v)?;
-                    self.inner.write_field_end()?;
-                }
-                FooterFieldValue::Bytes(v) => {
-                    self.inner.write_field_begin(&TFieldIdentifier::new(
-                        entry.name.as_str(),
-                        TType::String,
-                        field_id,
-                    ))?;
-                    self.inner.write_bytes(v)?;
-                    self.inner.write_field_end()?;
-                }
-            }
+            write_footer_field_value(self.inner, field_id, entry.name.as_str(), &entry.value)?;
         }
         self.inner.write_field_stop()
     }
@@ -671,7 +626,7 @@ mod tests {
 
     use super::OverrideState;
     use super::*;
-    use thrift::protocol::{TCompactInputProtocol, TInputProtocol};
+    use thrift::protocol::{TCompactInputProtocol, TInputProtocol, TType};
 
     #[test]
     fn override_state_skips_nested_payload_until_outer_field_end() {
