@@ -25,8 +25,10 @@ use crate::encryption::{
 #[cfg(feature = "encryption")]
 use crate::errors::ParquetError;
 use crate::errors::Result;
+use crate::file::metadata::r#override::write_footer_field_value;
 use crate::file::metadata::{KeyValue, ParquetMetaData};
 use crate::file::page_index::index::Index;
+use crate::file::properties::FooterFieldOverrides;
 use crate::file::writer::{get_file_magic, TrackedWrite};
 use crate::format::EncryptionAlgorithm;
 #[cfg(feature = "encryption")]
@@ -37,7 +39,181 @@ use crate::schema::types::{SchemaDescPtr, SchemaDescriptor, TypePtr};
 use crate::thrift::TSerializable;
 use std::io::Write;
 use std::sync::Arc;
-use thrift::protocol::TCompactOutputProtocol;
+use thrift::protocol::{
+    TCompactOutputProtocol, TFieldIdentifier, TListIdentifier, TMapIdentifier, TMessageIdentifier,
+    TOutputProtocol, TSetIdentifier, TStructIdentifier,
+};
+
+/// Proxy [`TOutputProtocol`] that intercepts `write_field_begin` for overridden field IDs,
+/// skips the standard field data, and injects override values at `write_field_stop`.
+#[derive(Debug, Default)]
+struct OverrideState {
+    structs: u32,
+    skip: Option<u32>,
+}
+
+impl OverrideState {
+    fn begin(&mut self) -> bool {
+        match self.skip.as_mut() {
+            Some(depth) => {
+                *depth += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn end(&mut self) -> bool {
+        match self.skip.as_mut() {
+            Some(depth) => {
+                debug_assert!(*depth > 0);
+                *depth = depth.saturating_sub(1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn field(&mut self) -> bool {
+        match self.skip {
+            Some(0) => {
+                self.skip = None;
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+}
+
+struct OverrideOutputProtocol<'a, W: Write> {
+    inner: &'a mut TCompactOutputProtocol<W>,
+    overrides: &'a FooterFieldOverrides,
+    state: OverrideState,
+}
+
+macro_rules! value {
+    ($method:ident($value_ty:ty)) => {
+        fn $method(&mut self, v: $value_ty) -> thrift::Result<()> {
+            if self.state.skip.is_some() {
+                return Ok(());
+            }
+            self.inner.$method(v)
+        }
+    };
+}
+
+macro_rules! container {
+    (begin $method:ident($id_ty:ty)) => {
+        fn $method(&mut self, id: &$id_ty) -> thrift::Result<()> {
+            if self.state.begin() {
+                return Ok(());
+            }
+            self.inner.$method(id)
+        }
+    };
+    (end $method:ident) => {
+        fn $method(&mut self) -> thrift::Result<()> {
+            if self.state.end() {
+                return Ok(());
+            }
+            self.inner.$method()
+        }
+    };
+}
+
+impl<'a, W: Write> TOutputProtocol for OverrideOutputProtocol<'a, W> {
+    fn write_message_begin(&mut self, id: &TMessageIdentifier) -> thrift::Result<()> {
+        self.inner.write_message_begin(id)
+    }
+    fn write_message_end(&mut self) -> thrift::Result<()> {
+        self.inner.write_message_end()
+    }
+    fn write_struct_begin(&mut self, id: &TStructIdentifier) -> thrift::Result<()> {
+        if self.state.begin() {
+            return Ok(());
+        }
+        self.state.structs += 1;
+        self.inner.write_struct_begin(id)
+    }
+    fn write_struct_end(&mut self) -> thrift::Result<()> {
+        if self.state.end() {
+            return Ok(());
+        }
+        self.state.structs -= 1;
+        self.inner.write_struct_end()
+    }
+
+    fn write_field_begin(&mut self, id: &TFieldIdentifier) -> thrift::Result<()> {
+        if self.state.skip.is_some() {
+            return Ok(());
+        }
+        // Only suppress fields at the FileMetaData struct level (depth 1)
+        if self.state.structs == 1 && id.id.is_some_and(|fid| self.overrides.contains_key(&fid)) {
+            self.state.skip = Some(0);
+            return Ok(());
+        }
+        self.inner.write_field_begin(id)
+    }
+    fn write_field_end(&mut self) -> thrift::Result<()> {
+        if self.state.field() {
+            return Ok(());
+        }
+        self.inner.write_field_end()
+    }
+
+    fn write_field_stop(&mut self) -> thrift::Result<()> {
+        if self.state.skip.is_some() {
+            return Ok(());
+        }
+        if self.state.structs != 1 {
+            return self.inner.write_field_stop();
+        }
+        let mut field_ids: Vec<i16> = self.overrides.keys().copied().collect();
+        field_ids.sort();
+        for field_id in field_ids {
+            let entry = &self.overrides[&field_id];
+            write_footer_field_value(self.inner, field_id, entry.name.as_str(), &entry.value)?;
+        }
+        self.inner.write_field_stop()
+    }
+
+    value!(write_bool(bool));
+    value!(write_byte(u8));
+    value!(write_i8(i8));
+    value!(write_i16(i16));
+    value!(write_i32(i32));
+    value!(write_i64(i64));
+    value!(write_double(f64));
+    value!(write_string(&str));
+    value!(write_bytes(&[u8]));
+
+    container!(begin write_list_begin(TListIdentifier));
+    container!(end write_list_end);
+    container!(begin write_set_begin(TSetIdentifier));
+    container!(end write_set_end);
+    container!(begin write_map_begin(TMapIdentifier));
+    container!(end write_map_end);
+
+    fn flush(&mut self) -> thrift::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn write_metadata_with_overrides(
+    file_metadata: &FileMetaData,
+    overrides: &FooterFieldOverrides,
+    sink: impl Write,
+) -> Result<()> {
+    let mut protocol = TCompactOutputProtocol::new(sink);
+    let mut wrapper = OverrideOutputProtocol {
+        inner: &mut protocol,
+        overrides,
+        state: OverrideState::default(),
+    };
+    file_metadata.write_to_out_protocol(&mut wrapper)?;
+    Ok(())
+}
 
 /// Writes `crate::file::metadata` structures to a thrift encoded byte stream
 ///
@@ -223,6 +399,11 @@ impl<'a, W: Write> ThriftMetadataWriter<'a, W> {
     #[cfg(feature = "encryption")]
     pub fn with_file_encryptor(mut self, file_encryptor: Option<Arc<FileEncryptor>>) -> Self {
         self.object_writer = self.object_writer.with_file_encryptor(file_encryptor);
+        self
+    }
+
+    pub fn with_footer_field_overrides(mut self, overrides: Option<FooterFieldOverrides>) -> Self {
+        self.object_writer.footer_field_overrides = overrides;
         self
     }
 }
@@ -426,6 +607,7 @@ impl<'a, W: Write> ParquetMetaDataWriter<'a, W> {
 struct MetadataObjectWriter {
     #[cfg(feature = "encryption")]
     file_encryptor: Option<Arc<FileEncryptor>>,
+    footer_field_overrides: Option<FooterFieldOverrides>,
 }
 
 impl MetadataObjectWriter {
@@ -437,12 +619,101 @@ impl MetadataObjectWriter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::Cursor;
+
+    use crate::file::properties::{FooterFieldOverride, FooterFieldValue};
+
+    use super::OverrideState;
+    use super::*;
+    use thrift::protocol::{TCompactInputProtocol, TInputProtocol, TType};
+
+    #[test]
+    fn override_state_skips_nested_payload_until_outer_field_end() {
+        let mut state = OverrideState {
+            structs: 1,
+            skip: Some(0),
+        };
+
+        assert!(state.begin());
+        assert_eq!(state.skip, Some(1));
+
+        assert!(state.field());
+        assert_eq!(state.skip, Some(1));
+
+        assert!(state.end());
+        assert_eq!(state.skip, Some(0));
+
+        assert!(state.field());
+        assert_eq!(state.skip, None);
+    }
+
+    #[test]
+    fn override_protocol_ignores_field_stop_inside_skipped_struct() -> thrift::Result<()> {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            8,
+            FooterFieldOverride {
+                name: "encrypted".to_string(),
+                value: FooterFieldValue::Bool(true),
+            },
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut protocol = TCompactOutputProtocol::new(&mut buf);
+            let mut wrapper = OverrideOutputProtocol {
+                inner: &mut protocol,
+                overrides: &overrides,
+                state: OverrideState::default(),
+            };
+
+            wrapper.write_struct_begin(&TStructIdentifier::new("FileMetaData"))?;
+            wrapper.write_field_begin(&TFieldIdentifier::new(
+                "encryption_algorithm",
+                TType::Struct,
+                8,
+            ))?;
+            wrapper.write_struct_begin(&TStructIdentifier::new("EncryptionAlgorithm"))?;
+            wrapper.write_field_begin(&TFieldIdentifier::new("AES_GCM_V1", TType::Struct, 1))?;
+            wrapper.write_struct_begin(&TStructIdentifier::new("AesGcmV1"))?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+            wrapper.write_field_end()?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+            wrapper.write_field_end()?;
+            wrapper.write_field_stop()?;
+            wrapper.write_struct_end()?;
+        }
+
+        let mut cursor = Cursor::new(buf);
+        let mut input = TCompactInputProtocol::new(&mut cursor);
+        input.read_struct_begin()?;
+        let first = input.read_field_begin()?;
+        assert_eq!(first.id, Some(8));
+        assert_eq!(first.field_type, TType::Bool);
+        assert!(input.read_bool()?);
+        input.read_field_end()?;
+
+        let stop = input.read_field_begin()?;
+        assert_eq!(stop.field_type, TType::Stop);
+
+        Ok(())
+    }
+}
+
 /// Implementations of [`MetadataObjectWriter`] methods for when encryption is disabled
 #[cfg(not(feature = "encryption"))]
 impl MetadataObjectWriter {
     /// Write [`FileMetaData`] in Thrift format
     fn write_file_metadata(&self, file_metadata: &FileMetaData, sink: impl Write) -> Result<()> {
-        Self::write_object(file_metadata, sink)
+        match &self.footer_field_overrides {
+            Some(overrides) => write_metadata_with_overrides(file_metadata, overrides, sink),
+            None => Self::write_object(file_metadata, sink),
+        }
     }
 
     /// Write a column [`OffsetIndex`] in Thrift format
@@ -521,7 +792,12 @@ impl MetadataObjectWriter {
                 let mut encryptor = file_encryptor.get_footer_encryptor()?;
                 write_signed_plaintext_object(file_metadata, &mut encryptor, &mut sink, &aad)
             }
-            _ => Self::write_object(file_metadata, &mut sink),
+            _ => match &self.footer_field_overrides {
+                Some(overrides) => {
+                    write_metadata_with_overrides(file_metadata, overrides, &mut sink)
+                }
+                None => Self::write_object(file_metadata, &mut sink),
+            },
         }
     }
 

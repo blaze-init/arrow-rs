@@ -267,7 +267,7 @@ impl CompressedPage {
     /// Update the compressed buffer for a page.
     /// This might be required when encrypting page data for example.
     /// The size of uncompressed data must not change.
-    #[cfg(feature = "encryption")]
+    #[cfg(any(feature = "encryption", feature = "external-encryption"))]
     pub(crate) fn with_new_compressed_buffer(mut self, new_buffer: Bytes) -> Self {
         match &mut self.compressed_page {
             Page::DataPage { buf, .. } => {

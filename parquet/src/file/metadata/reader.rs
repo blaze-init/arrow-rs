@@ -26,9 +26,11 @@ use crate::encryption::{
 use bytes::Bytes;
 
 use crate::errors::{ParquetError, Result};
+use crate::file::metadata::r#override::OverrideInputProtocol;
 use crate::file::metadata::{ColumnChunkMetaData, FileMetaData, ParquetMetaData, RowGroupMetaData};
 use crate::file::page_index::index::Index;
 use crate::file::page_index::index_reader::{acc_range, decode_column_index, decode_offset_index};
+use crate::file::properties::{FooterFieldReadOverrides, FooterFieldValues};
 use crate::file::reader::ChunkReader;
 use crate::file::{FOOTER_SIZE, PARQUET_MAGIC, PARQUET_MAGIC_ENCR_FOOTER};
 use crate::format::{ColumnOrder as TColumnOrder, FileMetaData as TFileMetaData};
@@ -37,6 +39,7 @@ use crate::format::{EncryptionAlgorithm, FileCryptoMetaData as TFileCryptoMetaDa
 use crate::schema::types;
 use crate::schema::types::SchemaDescriptor;
 use crate::thrift::{TCompactSliceInputProtocol, TSerializable};
+use thrift::protocol::TInputProtocol;
 
 #[cfg(all(feature = "async", feature = "arrow"))]
 use crate::arrow::async_reader::{MetadataFetch, MetadataSuffixFetch};
@@ -78,6 +81,7 @@ pub struct ParquetMetaDataReader {
     // Size of the serialized thrift metadata plus the 8 byte footer. Only set if
     // `self.parse_metadata` is called.
     metadata_size: Option<usize>,
+    footer_field_overrides: Option<FooterFieldReadOverrides>,
     #[cfg(feature = "encryption")]
     file_decryption_properties: Option<FileDecryptionProperties>,
 }
@@ -155,6 +159,12 @@ impl ParquetMetaDataReader {
     /// in extra fetches being performed.
     pub fn with_prefetch_hint(mut self, prefetch: Option<usize>) -> Self {
         self.prefetch_hint = prefetch;
+        self
+    }
+
+    /// Provide footer field overrides to read from the top-level `FileMetaData` thrift struct.
+    pub fn with_footer_field_overrides(mut self, overrides: &FooterFieldReadOverrides) -> Self {
+        self.footer_field_overrides = Some(overrides.clone());
         self
     }
 
@@ -875,6 +885,7 @@ impl ParquetMetaDataReader {
             buf,
             footer_tail.is_encrypted_footer(),
             self.file_decryption_properties.as_ref(),
+            self.footer_field_overrides.as_ref(),
         );
         #[cfg(not(feature = "encryption"))]
         let result = {
@@ -883,7 +894,10 @@ impl ParquetMetaDataReader {
                     "Parquet file has an encrypted footer but the encryption feature is disabled"
                 ))
             } else {
-                Self::decode_metadata(buf)
+                Self::decode_metadata_with_footer_overrides(
+                    buf,
+                    self.footer_field_overrides.as_ref(),
+                )
             }
         };
         result
@@ -903,6 +917,7 @@ impl ParquetMetaDataReader {
         buf: &[u8],
         encrypted_footer: bool,
         file_decryption_properties: Option<&FileDecryptionProperties>,
+        footer_field_overrides: Option<&FooterFieldReadOverrides>,
     ) -> Result<ParquetMetaData> {
         let mut prot = TCompactSliceInputProtocol::new(buf);
         let mut file_decryptor = None;
@@ -947,8 +962,9 @@ impl ParquetMetaDataReader {
             }
         }
 
-        let t_file_metadata: TFileMetaData = TFileMetaData::read_from_in_protocol(&mut prot)
-            .map_err(|e| general_err!("Could not parse metadata: {}", e))?;
+        let (t_file_metadata, footer_field_values) =
+            Self::read_file_metadata(&mut prot, footer_field_overrides)
+                .map_err(|e| general_err!("Could not parse metadata: {}", e))?;
         let schema = types::from_thrift(&t_file_metadata.schema)?;
         let schema_descr = Arc::new(SchemaDescriptor::new(schema));
 
@@ -987,7 +1003,8 @@ impl ParquetMetaDataReader {
             t_file_metadata.key_value_metadata,
             schema_descr,
             column_orders,
-        );
+        )
+        .with_footer_field_overrides(footer_field_values);
         let mut metadata = ParquetMetaData::new(file_metadata, row_groups);
 
         metadata.with_file_decryptor(file_decryptor);
@@ -1003,10 +1020,18 @@ impl ParquetMetaDataReader {
     ///
     /// [Parquet Spec]: https://github.com/apache/parquet-format#metadata
     pub fn decode_metadata(buf: &[u8]) -> Result<ParquetMetaData> {
+        Self::decode_metadata_with_footer_overrides(buf, None)
+    }
+
+    fn decode_metadata_with_footer_overrides(
+        buf: &[u8],
+        footer_field_overrides: Option<&FooterFieldReadOverrides>,
+    ) -> Result<ParquetMetaData> {
         let mut prot = TCompactSliceInputProtocol::new(buf);
 
-        let t_file_metadata: TFileMetaData = TFileMetaData::read_from_in_protocol(&mut prot)
-            .map_err(|e| general_err!("Could not parse metadata: {}", e))?;
+        let (t_file_metadata, footer_field_values) =
+            Self::read_file_metadata(&mut prot, footer_field_overrides)
+                .map_err(|e| general_err!("Could not parse metadata: {}", e))?;
         let schema = types::from_thrift(&t_file_metadata.schema)?;
         let schema_descr = Arc::new(SchemaDescriptor::new(schema));
 
@@ -1024,9 +1049,26 @@ impl ParquetMetaDataReader {
             t_file_metadata.key_value_metadata,
             schema_descr,
             column_orders,
-        );
+        )
+        .with_footer_field_overrides(footer_field_values);
 
         Ok(ParquetMetaData::new(file_metadata, row_groups))
+    }
+
+    fn read_file_metadata<T: TInputProtocol>(
+        prot: &mut T,
+        footer_field_overrides: Option<&FooterFieldReadOverrides>,
+    ) -> thrift::Result<(TFileMetaData, FooterFieldValues)> {
+        match footer_field_overrides {
+            Some(overrides) => {
+                let mut wrapper = OverrideInputProtocol::new(prot, overrides);
+                let metadata = TFileMetaData::read_from_in_protocol(&mut wrapper)?;
+                let values = wrapper.into_values();
+                Ok((metadata, values))
+            }
+            None => TFileMetaData::read_from_in_protocol(prot)
+                .map(|metadata| (metadata, FooterFieldValues::default())),
+        }
     }
 
     /// Parses column orders from Thrift definition.

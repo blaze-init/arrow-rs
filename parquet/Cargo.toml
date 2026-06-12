@@ -119,6 +119,8 @@ crc = ["dep:crc32fast"]
 simdutf8 = ["dep:simdutf8"]
 # Enable Parquet modular encryption support
 encryption = ["dep:ring"]
+# Enable external page data encryption
+external-encryption = []
 
 
 [[example]]
@@ -159,6 +161,16 @@ path = "./tests/arrow_reader/mod.rs"
 name = "encryption"
 required-features = ["arrow"]
 path = "./tests/encryption/mod.rs"
+
+[[test]]
+name = "external_encryption"
+required-features = ["arrow", "external-encryption"]
+path = "./tests/external_encryption/mod.rs"
+
+[[test]]
+name = "footer_field_overrides"
+required-features = ["arrow"]
+path = "./tests/footer_field_overrides/mod.rs"
 
 [[bin]]
 name = "parquet-read"

@@ -24,8 +24,10 @@ use crate::file::metadata::{ColumnChunkMetaData, FileMetaData, KeyValue, RowGrou
 use crate::file::page_encoding_stats::PageEncodingStats;
 use crate::file::page_index::index::{Index, NativeIndex, PageIndex};
 use crate::file::page_index::offset_index::OffsetIndexMetaData;
+use crate::file::properties::FooterFieldValue;
 use crate::file::statistics::{Statistics, ValueStatistics};
 use crate::format::{BoundaryOrder, PageLocation, SortingColumn};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Trait for calculating the size of various containers
@@ -45,6 +47,15 @@ impl<T: HeapSize> HeapSize for Vec<T> {
         (self.capacity() * item_size) +
         // add any heap allocations by contents
         self.iter().map(|t| t.heap_size()).sum::<usize>()
+    }
+}
+
+impl<K: HeapSize, V: HeapSize> HeapSize for HashMap<K, V> {
+    fn heap_size(&self) -> usize {
+        let entry_size = std::mem::size_of::<K>() + std::mem::size_of::<V>();
+        (self.capacity() * entry_size)
+            + self.keys().map(|k| k.heap_size()).sum::<usize>()
+            + self.values().map(|v| v.heap_size()).sum::<usize>()
     }
 }
 
@@ -72,6 +83,19 @@ impl HeapSize for FileMetaData {
             + self.key_value_metadata.heap_size()
             + self.schema_descr.heap_size()
             + self.column_orders.heap_size()
+            + self.footer_field_overrides.heap_size()
+    }
+}
+
+impl HeapSize for FooterFieldValue {
+    fn heap_size(&self) -> usize {
+        match self {
+            FooterFieldValue::Bool(_) | FooterFieldValue::Int32(_) | FooterFieldValue::Int64(_) => {
+                0
+            }
+            FooterFieldValue::String(v) => v.heap_size(),
+            FooterFieldValue::Bytes(v) => v.capacity(),
+        }
     }
 }
 
@@ -193,6 +217,11 @@ impl HeapSize for bool {
     }
 }
 impl HeapSize for i32 {
+    fn heap_size(&self) -> usize {
+        0 // no heap allocations
+    }
+}
+impl HeapSize for i16 {
     fn heap_size(&self) -> usize {
         0 // no heap allocations
     }

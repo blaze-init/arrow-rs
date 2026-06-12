@@ -52,6 +52,8 @@ use crate::column::page::{PageIterator, PageReader};
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use crate::file::page_index::offset_index::OffsetIndexMetaData;
+#[cfg(feature = "external-encryption")]
+use crate::file::properties::ExternalDecryption;
 use crate::file::reader::{ChunkReader, Length, SerializedPageReader};
 use crate::format::{BloomFilterAlgorithm, BloomFilterCompression, BloomFilterHash};
 
@@ -182,8 +184,11 @@ impl<T: AsyncRead + AsyncSeek + Unpin + Send> AsyncFileReader for T {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>> {
         async move {
-            let metadata_reader = ParquetMetaDataReader::new()
+            let mut metadata_reader = ParquetMetaDataReader::new()
                 .with_page_indexes(options.is_some_and(|o| o.page_index));
+            if let Some(overrides) = options.and_then(|o| o.footer_field_overrides.as_ref()) {
+                metadata_reader = metadata_reader.with_footer_field_overrides(overrides);
+            }
 
             #[cfg(feature = "encryption")]
             let metadata_reader = metadata_reader.with_decryption_properties(
@@ -520,6 +525,8 @@ impl<T: AsyncFileReader + Send + 'static> ParquetRecordBatchStreamBuilder<T> {
             fields: self.fields,
             limit: self.limit,
             offset: self.offset,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: self.external_decryption,
         };
 
         // Ensure schema of ParquetRecordBatchStream respects projection, and does
@@ -570,6 +577,9 @@ struct ReaderFactory<T> {
 
     /// Offset to apply to the next
     offset: Option<usize>,
+
+    #[cfg(feature = "external-encryption")]
+    external_decryption: Option<ExternalDecryption>,
 }
 
 impl<T> ReaderFactory<T>
@@ -605,6 +615,8 @@ where
             offset_index,
             row_group_idx,
             metadata: self.metadata.as_ref(),
+            #[cfg(feature = "external-encryption")]
+            external_decryption: self.external_decryption.clone(),
         };
 
         let filter = self.filter.as_mut();
@@ -894,6 +906,8 @@ struct InMemoryRowGroup<'a> {
     row_count: usize,
     row_group_idx: usize,
     metadata: &'a ParquetMetaData,
+    #[cfg(feature = "external-encryption")]
+    external_decryption: Option<ExternalDecryption>,
 }
 
 impl InMemoryRowGroup<'_> {
@@ -1028,6 +1042,9 @@ impl RowGroups for InMemoryRowGroup<'_> {
                     self.metadata,
                     column_chunk_metadata,
                 )?;
+                #[cfg(feature = "external-encryption")]
+                let page_reader =
+                    page_reader.with_external_page_decryption(self.external_decryption.clone());
 
                 let page_reader: Box<dyn PageReader> = Box::new(page_reader);
 
@@ -1174,8 +1191,11 @@ mod tests {
             &'a mut self,
             options: Option<&'a ArrowReaderOptions>,
         ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>>> {
-            let metadata_reader = ParquetMetaDataReader::new()
+            let mut metadata_reader = ParquetMetaDataReader::new()
                 .with_page_indexes(options.is_some_and(|o| o.page_index));
+            if let Some(overrides) = options.and_then(|o| o.footer_field_overrides.as_ref()) {
+                metadata_reader = metadata_reader.with_footer_field_overrides(overrides);
+            }
             self.metadata = Some(Arc::new(
                 metadata_reader.parse_and_finish(&self.data).unwrap(),
             ));
@@ -1893,6 +1913,8 @@ mod tests {
             filter: None,
             limit: None,
             offset: None,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: None,
         };
 
         let mut skip = true;
