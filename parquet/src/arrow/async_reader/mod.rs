@@ -523,8 +523,6 @@ impl<T: AsyncFileReader + Send + 'static> ParquetRecordBatchStreamBuilder<T> {
             limit: self.limit,
             offset: self.offset,
             #[cfg(feature = "external-encryption")]
-            external_encrypted: self.external_encrypted,
-            #[cfg(feature = "external-encryption")]
             external_decryption: self.external_decryption,
         };
 
@@ -578,8 +576,6 @@ struct ReaderFactory<T> {
     offset: Option<usize>,
 
     #[cfg(feature = "external-encryption")]
-    external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
     external_decryption: Option<ExternalDecryption>,
 }
 
@@ -616,8 +612,6 @@ where
             offset_index,
             row_group_idx,
             metadata: self.metadata.as_ref(),
-            #[cfg(feature = "external-encryption")]
-            external_encrypted: self.external_encrypted,
             #[cfg(feature = "external-encryption")]
             external_decryption: self.external_decryption.clone(),
         };
@@ -910,8 +904,6 @@ struct InMemoryRowGroup<'a> {
     row_group_idx: usize,
     metadata: &'a ParquetMetaData,
     #[cfg(feature = "external-encryption")]
-    external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
     external_decryption: Option<ExternalDecryption>,
 }
 
@@ -1048,10 +1040,8 @@ impl RowGroups for InMemoryRowGroup<'_> {
                     column_chunk_metadata,
                 )?;
                 #[cfg(feature = "external-encryption")]
-                let page_reader = page_reader.with_external_page_decryption(
-                    self.external_encrypted,
-                    self.external_decryption.clone(),
-                );
+                let page_reader =
+                    page_reader.with_external_page_decryption(self.external_decryption.clone());
 
                 let page_reader: Box<dyn PageReader> = Box::new(page_reader);
 
@@ -1917,6 +1907,8 @@ mod tests {
             filter: None,
             limit: None,
             offset: None,
+            #[cfg(feature = "external-encryption")]
+            external_decryption: None,
         };
 
         let mut skip = true;

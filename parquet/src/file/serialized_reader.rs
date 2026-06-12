@@ -26,14 +26,14 @@ use crate::compression::{create_codec, Codec};
 use crate::encryption::decrypt::{read_and_decrypt, CryptoContext};
 use crate::errors::{ParquetError, Result};
 use crate::file::page_index::offset_index::OffsetIndexMetaData;
+#[cfg(feature = "external-encryption")]
+use crate::file::properties::ExternalDecryption;
 use crate::file::{
     metadata::*,
     properties::{ReaderProperties, ReaderPropertiesPtr},
     reader::*,
     statistics,
 };
-#[cfg(feature = "external-encryption")]
-use crate::file::properties::ExternalDecryption;
 use crate::format::{PageHeader, PageLocation, PageType};
 use crate::record::reader::RowIter;
 use crate::record::Row;
@@ -503,8 +503,6 @@ struct SerializedPageReaderContext {
     #[cfg(feature = "encryption")]
     crypto_context: Option<Arc<CryptoContext>>,
     #[cfg(feature = "external-encryption")]
-    external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
     external_decryption: Option<ExternalDecryption>,
 }
 
@@ -578,10 +576,8 @@ impl<R: ChunkReader> SerializedPageReader<R> {
     #[cfg(feature = "external-encryption")]
     pub(crate) fn with_external_page_decryption(
         mut self,
-        encrypted: bool,
         decryption: Option<ExternalDecryption>,
     ) -> Self {
-        self.context.external_encrypted = encrypted;
         self.context.external_decryption = decryption;
         self
     }
@@ -825,39 +821,23 @@ impl SerializedPageReaderContext {
 #[cfg(not(feature = "external-encryption"))]
 impl SerializedPageReaderContext {
     #[allow(clippy::unnecessary_wraps)]
-    fn decrypt_external_page_data<T>(
-        &self,
-        _header: &PageHeader,
-        buffer: T,
-    ) -> Result<T>
-    where
-        T: AsRef<[u8]>,
-    {
+    fn decrypt_external_page_data<T>(&self, _header: &PageHeader, buffer: T) -> Result<T> {
         Ok(buffer)
     }
 }
 
 #[cfg(feature = "external-encryption")]
 impl SerializedPageReaderContext {
-    fn decrypt_external_page_data<T>(
-        &self,
-        header: &PageHeader,
-        buffer: T,
-    ) -> Result<T>
+    fn decrypt_external_page_data<T>(&self, header: &PageHeader, buffer: T) -> Result<T>
     where
         T: AsRef<[u8]> + From<Vec<u8>>,
     {
-        if !self.external_encrypted {
-            return Ok(buffer);
-        }
         let page_type = header.type_;
         if page_type != PageType::DATA_PAGE && page_type != PageType::DATA_PAGE_V2 {
             return Ok(buffer);
         }
-        let Some(ref decryption) = self.external_decryption else {
-            return Err(general_err!(
-                "External encrypted file requires external decryption but no decryptor provided"
-            ));
+        let Some(decryption) = self.external_decryption.as_ref() else {
+            return Ok(buffer);
         };
         let decrypted = decryption.decrypt_page(buffer.as_ref())?;
         Ok(T::from(decrypted))
@@ -950,9 +930,7 @@ impl<R: ChunkReader> PageReader for SerializedPageReader<R> {
                     let buffer =
                         self.context
                             .decrypt_page_data(buffer, *page_index, *require_dictionary)?;
-                    let buffer = self
-                        .context
-                        .decrypt_external_page_data(&header, buffer)?;
+                    let buffer = self.context.decrypt_external_page_data(&header, buffer)?;
 
                     let page = decode_page(
                         header,
@@ -994,9 +972,7 @@ impl<R: ChunkReader> PageReader for SerializedPageReader<R> {
                     let bytes =
                         self.context
                             .decrypt_page_data(bytes, *page_index, is_dictionary_page)?;
-                    let bytes = self
-                        .context
-                        .decrypt_external_page_data(&header, bytes)?;
+                    let bytes = self.context.decrypt_external_page_data(&header, bytes)?;
 
                     if !is_dictionary_page {
                         *page_index += 1;

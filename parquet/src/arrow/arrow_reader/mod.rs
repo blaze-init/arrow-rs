@@ -35,9 +35,9 @@ use crate::column::page::{PageIterator, PageReader};
 use crate::encryption::decrypt::FileDecryptionProperties;
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
-use crate::file::reader::{ChunkReader, SerializedPageReader};
 #[cfg(feature = "external-encryption")]
 use crate::file::properties::ExternalDecryption;
+use crate::file::reader::{ChunkReader, SerializedPageReader};
 use crate::schema::types::SchemaDescriptor;
 
 pub(crate) use read_plan::{ReadPlan, ReadPlanBuilder};
@@ -115,15 +115,15 @@ pub struct ArrowReaderBuilder<T> {
 
     pub offset: Option<usize>,
 
+    /// The external decryption configuration.
     #[cfg(feature = "external-encryption")]
-    pub(crate) external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
-    pub(crate) external_decryption: Option<ExternalDecryption>,
+    pub external_decryption: Option<ExternalDecryption>,
 }
 
 impl<T: Debug> Debug for ArrowReaderBuilder<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ArrowReaderBuilder<T>")
+        let mut builder = f.debug_struct("ArrowReaderBuilder<T>");
+        builder
             .field("input", &self.input)
             .field("metadata", &self.metadata)
             .field("schema", &self.schema)
@@ -134,8 +134,10 @@ impl<T: Debug> Debug for ArrowReaderBuilder<T> {
             .field("filter", &self.filter)
             .field("selection", &self.selection)
             .field("limit", &self.limit)
-            .field("offset", &self.offset)
-            .finish()
+            .field("offset", &self.offset);
+        #[cfg(feature = "external-encryption")]
+        builder.field("external_decryption", &self.external_decryption);
+        builder.finish()
     }
 }
 
@@ -153,8 +155,6 @@ impl<T> ArrowReaderBuilder<T> {
             selection: None,
             limit: None,
             offset: None,
-            #[cfg(feature = "external-encryption")]
-            external_encrypted: metadata.external_encrypted,
             #[cfg(feature = "external-encryption")]
             external_decryption: metadata.external_decryption,
         }
@@ -327,11 +327,7 @@ pub struct ArrowReaderOptions {
     /// If encryption is enabled, the file decryption properties can be provided
     #[cfg(feature = "encryption")]
     pub(crate) file_decryption_properties: Option<FileDecryptionProperties>,
-    /// If true, external page decryption will be applied to data pages.
-    /// Requires `external-encryption` feature.
-    #[cfg(feature = "external-encryption")]
-    pub(crate) external_encrypted: bool,
-    /// The external decryption configuration. Ignored unless `external_encrypted` is true.
+    /// If present, external page decryption will be applied to data pages.
     #[cfg(feature = "external-encryption")]
     pub(crate) external_decryption: Option<ExternalDecryption>,
 }
@@ -465,35 +461,11 @@ impl ArrowReaderOptions {
         self.file_decryption_properties.as_ref()
     }
 
-    /// If true, external page decryption will be applied to data pages.
-    #[cfg(feature = "external-encryption")]
-    pub fn with_external_encrypted(self, encrypted: bool) -> Self {
-        Self {
-            external_encrypted: encrypted,
-            ..self
-        }
-    }
-
     /// Provide the external decryption configuration.
-    /// Only used when `external_encrypted` is true.
     #[cfg(feature = "external-encryption")]
-    pub fn with_external_decryption(self, decryption: ExternalDecryption) -> Self {
-        Self {
-            external_decryption: Some(decryption),
-            ..self
-        }
-    }
-
-    /// Retrieve the currently set external encrypted flag.
-    #[cfg(feature = "external-encryption")]
-    pub fn external_encrypted(&self) -> bool {
-        self.external_encrypted
-    }
-
-    /// Retrieve the currently set external decryption configuration.
-    #[cfg(feature = "external-encryption")]
-    pub fn external_decryption(&self) -> Option<&ExternalDecryption> {
-        self.external_decryption.as_ref()
+    pub fn with_external_decryption(mut self, decryption: ExternalDecryption) -> Self {
+        self.external_decryption = Some(decryption);
+        self
     }
 }
 
@@ -521,8 +493,6 @@ pub struct ArrowReaderMetadata {
     pub(crate) fields: Option<Arc<ParquetField>>,
 
     #[cfg(feature = "external-encryption")]
-    pub(crate) external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
     pub(crate) external_decryption: Option<ExternalDecryption>,
 }
 
@@ -538,6 +508,14 @@ impl ArrowReaderMetadata {
     /// `Self::metadata` is missing the page index, this function will attempt
     /// to load the page index by making an object store request.
     pub fn load<T: ChunkReader>(reader: &T, options: ArrowReaderOptions) -> Result<Self> {
+        #[cfg(all(feature = "external-encryption", feature = "encryption"))]
+        if options.external_decryption.is_some() && options.file_decryption_properties.is_some() {
+            return Err(ParquetError::General(
+                "file_decryption_properties and external_decryption are mutually exclusive"
+                    .to_string(),
+            ));
+        }
+
         let metadata = ParquetMetaDataReader::new().with_page_indexes(options.page_index);
         #[cfg(feature = "encryption")]
         let metadata =
@@ -553,13 +531,24 @@ impl ArrowReaderMetadata {
     /// This function does not attempt to load the PageIndex if not present in the metadata.
     /// See [`Self::load`] for more details.
     pub fn try_new(metadata: Arc<ParquetMetaData>, options: ArrowReaderOptions) -> Result<Self> {
-        #[cfg(feature = "external-encryption")]
-        let external_encrypted = options.external_encrypted;
+        #[cfg(all(feature = "external-encryption", feature = "encryption"))]
+        if options.external_decryption.is_some() && options.file_decryption_properties.is_some() {
+            return Err(ParquetError::General(
+                "file_decryption_properties and external_decryption are mutually exclusive"
+                    .to_string(),
+            ));
+        }
+
         #[cfg(feature = "external-encryption")]
         let external_decryption = options.external_decryption.clone();
 
-        let mut result = match options.supplied_schema {
-            Some(supplied_schema) => Self::with_supplied_schema(metadata, supplied_schema.clone()),
+        let result = match options.supplied_schema {
+            Some(supplied_schema) => Self::with_supplied_schema(
+                metadata,
+                supplied_schema.clone(),
+                #[cfg(feature = "external-encryption")]
+                external_decryption,
+            ),
             None => {
                 let kv_metadata = match options.skip_arrow_metadata {
                     true => None,
@@ -577,18 +566,10 @@ impl ArrowReaderMetadata {
                     schema: Arc::new(schema),
                     fields: fields.map(Arc::new),
                     #[cfg(feature = "external-encryption")]
-                    external_encrypted: false,
-                    #[cfg(feature = "external-encryption")]
-                    external_decryption: None,
+                    external_decryption,
                 })
             }
         }?;
-
-        #[cfg(feature = "external-encryption")]
-        {
-            result.external_encrypted = external_encrypted;
-            result.external_decryption = external_decryption;
-        }
 
         Ok(result)
     }
@@ -596,6 +577,7 @@ impl ArrowReaderMetadata {
     fn with_supplied_schema(
         metadata: Arc<ParquetMetaData>,
         supplied_schema: SchemaRef,
+        #[cfg(feature = "external-encryption")] external_decryption: Option<ExternalDecryption>,
     ) -> Result<Self> {
         let parquet_schema = metadata.file_metadata().schema_descr();
         let field_levels = parquet_to_arrow_field_levels(
@@ -659,9 +641,7 @@ impl ArrowReaderMetadata {
             schema: supplied_schema,
             fields: field_levels.levels.map(Arc::new),
             #[cfg(feature = "external-encryption")]
-            external_encrypted: false,
-            #[cfg(feature = "external-encryption")]
-            external_decryption: None,
+            external_decryption,
         })
     }
 
@@ -796,8 +776,6 @@ impl<T: ChunkReader + 'static> ParquetRecordBatchReaderBuilder<T> {
             metadata: self.metadata,
             row_groups,
             #[cfg(feature = "external-encryption")]
-            external_encrypted: self.external_encrypted,
-            #[cfg(feature = "external-encryption")]
             external_decryption: self.external_decryption,
         };
 
@@ -840,8 +818,6 @@ struct ReaderRowGroups<T: ChunkReader> {
     /// Optional list of row group indices to scan
     row_groups: Vec<usize>,
     #[cfg(feature = "external-encryption")]
-    external_encrypted: bool,
-    #[cfg(feature = "external-encryption")]
     external_decryption: Option<ExternalDecryption>,
 }
 
@@ -861,8 +837,6 @@ impl<T: ChunkReader + 'static> RowGroups for ReaderRowGroups<T> {
             metadata: self.metadata.clone(),
             row_groups: self.row_groups.clone().into_iter(),
             #[cfg(feature = "external-encryption")]
-            external_encrypted: self.external_encrypted,
-            #[cfg(feature = "external-encryption")]
             external_decryption: self.external_decryption.clone(),
         }))
     }
@@ -873,8 +847,6 @@ struct ReaderPageIterator<T: ChunkReader> {
     column_idx: usize,
     row_groups: std::vec::IntoIter<usize>,
     metadata: Arc<ParquetMetaData>,
-    #[cfg(feature = "external-encryption")]
-    external_encrypted: bool,
     #[cfg(feature = "external-encryption")]
     external_decryption: Option<ExternalDecryption>,
 }
@@ -893,16 +865,17 @@ impl<T: ChunkReader + 'static> ReaderPageIterator<T> {
         let total_rows = rg.num_rows() as usize;
         let reader = self.reader.clone();
 
-        let page_reader = SerializedPageReader::new(reader, column_chunk_metadata, total_rows, page_locations)?
-            .add_crypto_context(
+        let page_reader =
+            SerializedPageReader::new(reader, column_chunk_metadata, total_rows, page_locations)?
+                .add_crypto_context(
                 rg_idx,
                 self.column_idx,
                 self.metadata.as_ref(),
                 column_chunk_metadata,
             )?;
         #[cfg(feature = "external-encryption")]
-        let page_reader = page_reader
-            .with_external_page_decryption(self.external_encrypted, self.external_decryption.clone());
+        let page_reader =
+            page_reader.with_external_page_decryption(self.external_decryption.clone());
         Ok(page_reader)
     }
 }
